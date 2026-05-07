@@ -1,0 +1,11 @@
+# local auth - never commit
+cookies.json
+storage-state.json
+
+# generated artifacts
+oe-artifacts/
+
+# python
+__pycache__/
+*.pyc
+.venv/

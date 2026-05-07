@@ -10,6 +10,9 @@ auth/
 cookies.json
 storage-state.json
 
+# packaged skill bundles may carry cookies — keep local
+*.skill
+
 # OS/editor
 .DS_Store
 Thumbs.db
