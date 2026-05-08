@@ -9,6 +9,7 @@ dist/
 auth/
 cookies.json
 storage-state.json
+*.har
 
 # packaged skill bundles may carry cookies — keep local
 *.skill
