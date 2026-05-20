@@ -1,7 +1,7 @@
 <h1 align="center">OpenEvidence MCP (Cookie Auth Fork)</h1>
 
 <p align="center">
-  Use OpenEvidence from Claude Code, Codex CLI, Gemini CLI, Claude Desktop, Cursor, Cline, Continue, and any MCP-compatible client.
+  Use OpenEvidence from Claude Code, Codex CLI, Antigravity CLI, Claude Desktop, Cursor, Cline, Continue, and any MCP-compatible client.
 </p>
 
 <p align="center">
@@ -18,7 +18,6 @@
   <img alt="Crossref" src="https://img.shields.io/badge/validation-Crossref-f97316">
   <img alt="Claude Code" src="https://img.shields.io/badge/Claude%20Code-ready-6b7280">
   <img alt="Codex CLI" src="https://img.shields.io/badge/Codex%20CLI-ready-111827">
-  <img alt="Gemini CLI" src="https://img.shields.io/badge/Gemini%20CLI-ready-4285f4">
   <img alt="Antigravity CLI" src="https://img.shields.io/badge/Antigravity%20CLI-ready-8b5cf6">
 </p>
 
@@ -161,19 +160,17 @@ startup_timeout_sec = 60
 OE_MCP_COOKIES_PATH = "/ABSOLUTE/PATH/openevidence-mcp/cookies.json"
 ```
 
-### Gemini CLI / Antigravity CLI
-
-For both Gemini CLI and Antigravity CLI, you can use the same installation target, as they share the underlying configuration schema:
+### Antigravity CLI (agy-cli)
 
 ```bash
-make install-gemini-global
-gemini mcp list
+make install-agy-global
+agy-cli mcp list
 ```
 
 Equivalent manual command:
 
 ```bash
-gemini mcp add --scope user \
+agy-cli mcp add --scope user \
   -e OE_MCP_COOKIES_PATH="$PWD/cookies.json" \
   openevidence node "$PWD/dist/server.js"
 ```
@@ -202,7 +199,7 @@ Use this `mcpServers` shape:
 make install-all
 ```
 
-This registers the same local stdio server with Claude Code, Codex CLI, and Gemini CLI.
+This registers the same local stdio server with Claude Code, Codex CLI, and Antigravity CLI.
 
 ## Verify
 
@@ -345,8 +342,8 @@ Then restart or open a fresh MCP client session if the old stdio server process 
 | `make import-cookies COOKIES=/path/to/cookies.json` | Import and verify cookies |
 | `make install-claude-global` | Register with Claude Code user config |
 | `make install-codex-global` | Register with Codex CLI |
-| `make install-gemini-global` | Register with Gemini CLI user config |
-| `make install-all` | Register with Claude Code, Codex CLI, and Gemini CLI |
+| `make install-agy-global` | Register with Antigravity CLI user config |
+| `make install-all` | Register with Claude Code, Codex CLI, and Antigravity CLI |
 
 ## Environment Variables
 

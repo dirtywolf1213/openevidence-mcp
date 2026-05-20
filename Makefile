@@ -3,14 +3,14 @@ NPM ?= npm
 PYTHON ?= python3
 CLAUDE ?= claude
 CODEX ?= codex
-GEMINI ?= gemini
+AGY ?= agy-cli
 MCP_NAME ?= openevidence
 COOKIES ?= $(CURDIR)/cookies.json
 HAR ?= $(CURDIR)/www.openevidence.com_dotflow.har
 HAR_MINE ?= $(CURDIR)/www.openevidence.com_dotflow_mine.har
 SERVER := $(CURDIR)/dist/server.js
 
-.PHONY: deps build check test smoke import-cookies update-dotflows update-dotflows-from-har sync-mine sync-mine-from-har install-claude-global install-codex-global install-gemini-global install-all remove-claude-global remove-codex-global remove-gemini-global reinstall-claude-global reinstall-codex-global reinstall-gemini-global clean
+.PHONY: deps build check test smoke import-cookies update-dotflows update-dotflows-from-har sync-mine sync-mine-from-har install-claude-global install-codex-global install-agy-global install-all remove-claude-global remove-codex-global remove-agy-global reinstall-claude-global reinstall-codex-global reinstall-agy-global clean
 
 deps:
 	$(NPM) install
@@ -50,11 +50,11 @@ install-codex-global: build
 	$(CODEX) mcp remove $(MCP_NAME) >/dev/null 2>&1 || true
 	$(CODEX) mcp add $(MCP_NAME) --env OE_MCP_COOKIES_PATH="$(COOKIES)" -- $(NODE) "$(SERVER)"
 
-install-gemini-global: build
-	$(GEMINI) mcp remove --scope user $(MCP_NAME) >/dev/null 2>&1 || true
-	$(GEMINI) mcp add --scope user -e OE_MCP_COOKIES_PATH="$(COOKIES)" $(MCP_NAME) $(NODE) "$(SERVER)"
+install-agy-global: build
+	$(AGY) mcp remove --scope user $(MCP_NAME) >/dev/null 2>&1 || true
+	$(AGY) mcp add --scope user -e OE_MCP_COOKIES_PATH="$(COOKIES)" $(MCP_NAME) $(NODE) "$(SERVER)"
 
-install-all: install-claude-global install-codex-global install-gemini-global
+install-all: install-claude-global install-codex-global install-agy-global
 
 remove-claude-global:
 	$(CLAUDE) mcp remove --scope user $(MCP_NAME)
@@ -62,14 +62,14 @@ remove-claude-global:
 remove-codex-global:
 	$(CODEX) mcp remove $(MCP_NAME)
 
-remove-gemini-global:
-	$(GEMINI) mcp remove --scope user $(MCP_NAME)
+remove-agy-global:
+	$(AGY) mcp remove --scope user $(MCP_NAME)
 
 reinstall-claude-global: install-claude-global
 
 reinstall-codex-global: install-codex-global
 
-reinstall-gemini-global: install-gemini-global
+reinstall-agy-global: install-agy-global
 
 clean:
 	rm -rf dist
