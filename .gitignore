@@ -1,6 +1,7 @@
 node_modules/
 dist/
 .omx/
+.antigravitycli/
 .env
 .env.local
 
@@ -9,6 +10,7 @@ dist/
 auth/
 cookies.json
 storage-state.json
+openevidence-fingerprint.json
 *.har
 
 # packaged skill bundles may carry cookies — keep local

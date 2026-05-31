@@ -98,22 +98,44 @@ Saved artifacts:
 
 ## Fast Install
 
+You need two private browser exports from the same logged-in OpenEvidence browser session:
+
+| File | Purpose | Where to put it |
+| --- | --- | --- |
+| `cookies.json` | Authenticates your OpenEvidence account session | `./cookies.json` |
+| `www.openevidence.com.har` | Teaches the client the browser fingerprint that worked | Any private path; pass it as `HAR=...` |
+
+Both files are credentials. Keep them local, do not commit them, and do not share them. The HAR extractor only saves the browser signature headers into `openevidence-fingerprint.json`; it does not copy cookies or authorization headers from the HAR.
+
 ```bash
 git clone https://github.com/htlin222/openevidence-mcp.git
 cd openevidence-mcp
 npm install
-npm run build
 ```
 
 Export cookies from a logged-in `https://www.openevidence.com` browser session and put them here:
 
 ```bash
 cp /path/to/browser-cookies.json ./cookies.json
+```
+
+Export a HAR that contains a successful OpenEvidence ask request (`POST /api/article`, usually status `201`), then build:
+
+```bash
+make build HAR=/path/to/www.openevidence.com.har
 npm run login
 npm run smoke
 ```
 
-The cookie file can be a browser-exported cookies array or a storage-state object with a `cookies` array.
+`make build` extracts `openevidence-fingerprint.json` from the HAR when the HAR exists, then compiles `dist/server.js`. The cookie file can be a browser-exported cookies array or a storage-state object with a `cookies` array.
+
+For a private battery-included portable skill, also copy the same cookie file into the skill folder:
+
+```bash
+cp ./cookies.json ./openevidence-skill/cookies.json
+```
+
+That lets `openevidence-skill/scripts/oe.py` run standalone without MCP config. This is local-only; `openevidence-skill/cookies.json` is gitignored and should never be published in a public skill bundle.
 
 ## Register With MCP Clients
 
@@ -122,7 +144,7 @@ Use one of these.
 ### Claude Code
 
 ```bash
-make install-claude-global
+make install-claude-global HAR=/path/to/www.openevidence.com.har
 claude mcp get openevidence
 ```
 
@@ -136,7 +158,7 @@ OE_MCP_COOKIES_PATH=/ABSOLUTE/PATH/openevidence-mcp/cookies.json
 ### Codex CLI
 
 ```bash
-make install-codex-global
+make install-codex-global HAR=/path/to/www.openevidence.com.har
 codex mcp get openevidence
 ```
 
@@ -163,7 +185,7 @@ OE_MCP_COOKIES_PATH = "/ABSOLUTE/PATH/openevidence-mcp/cookies.json"
 ### Antigravity CLI (agy-cli)
 
 ```bash
-make install-agy-global
+make install-agy-global HAR=/path/to/www.openevidence.com.har
 agy-cli mcp list
 ```
 
@@ -196,7 +218,7 @@ Use this `mcpServers` shape:
 ### Install Everywhere
 
 ```bash
-make install-all
+make install-all HAR=/path/to/www.openevidence.com.har
 ```
 
 This registers the same local stdio server with Claude Code, Codex CLI, and Antigravity CLI.
@@ -335,15 +357,16 @@ Then restart or open a fresh MCP client session if the old stdio server process 
 | Target | Purpose |
 | --- | --- |
 | `make deps` | Run `npm install` |
-| `make build` | Compile TypeScript |
+| `make build HAR=/path/to/file.har` | Extract fingerprint if the HAR exists, then compile TypeScript |
 | `make check` | Type-check |
 | `make test` | Run unit tests |
 | `make smoke` | Validate auth and history access |
+| `make fingerprint HAR=/path/to/file.har` | Extract the working browser fingerprint from a HAR |
 | `make import-cookies COOKIES=/path/to/cookies.json` | Import and verify cookies |
-| `make install-claude-global` | Register with Claude Code user config |
-| `make install-codex-global` | Register with Codex CLI |
-| `make install-agy-global` | Register with Antigravity CLI user config |
-| `make install-all` | Register with Claude Code, Codex CLI, and Antigravity CLI |
+| `make install-claude-global HAR=/path/to/file.har` | Build, then register with Claude Code user config |
+| `make install-codex-global HAR=/path/to/file.har` | Build, then register with Codex CLI |
+| `make install-agy-global HAR=/path/to/file.har` | Build, then register with Antigravity CLI user config |
+| `make install-all HAR=/path/to/file.har` | Build, then register with Claude Code, Codex CLI, and Antigravity CLI |
 
 ## Environment Variables
 
@@ -353,6 +376,7 @@ Then restart or open a fresh MCP client session if the old stdio server process 
 | `OE_MCP_ROOT_DIR` | `~/.openevidence-mcp` | Root for default auth paths |
 | `OE_MCP_COOKIES_PATH` | `./cookies.json` if present, else `~/.openevidence-mcp/auth/cookies.json` | Cookie file |
 | `OE_MCP_AUTH_STATE_PATH` | unset | Legacy alias for `OE_MCP_COOKIES_PATH` |
+| `OE_MCP_FINGERPRINT_PATH` | `./openevidence-fingerprint.json` if present | Browser signature header fingerprint |
 | `OE_MCP_ARTIFACT_DIR` | OS temp dir + `openevidence-mcp` | Artifact output directory |
 | `OE_MCP_CROSSREF_MAILTO` | unset | Optional Crossref polite-pool email |
 | `OE_MCP_CROSSREF_VALIDATE` | `1` | Set `0` to skip Crossref validation |

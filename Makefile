@@ -8,14 +8,25 @@ MCP_NAME ?= openevidence
 COOKIES ?= $(CURDIR)/cookies.json
 HAR ?= $(CURDIR)/www.openevidence.com_dotflow.har
 HAR_MINE ?= $(CURDIR)/www.openevidence.com_dotflow_mine.har
+FINGERPRINT ?= $(CURDIR)/openevidence-fingerprint.json
+ifeq ($(origin HAR), command line)
+FINGERPRINT_HAR ?= $(HAR)
+else
+FINGERPRINT_HAR ?= $(CURDIR)/www.openevidence.com.har
+endif
 SERVER := $(CURDIR)/dist/server.js
 
-.PHONY: deps build check test smoke import-cookies update-dotflows update-dotflows-from-har sync-mine sync-mine-from-har install-claude-global install-codex-global install-agy-global install-all remove-claude-global remove-codex-global remove-agy-global reinstall-claude-global reinstall-codex-global reinstall-agy-global clean
+.PHONY: deps build check test smoke fingerprint import-cookies update-dotflows update-dotflows-from-har sync-mine sync-mine-from-har install-claude-global install-codex-global install-agy-global install-all remove-claude-global remove-codex-global remove-agy-global reinstall-claude-global reinstall-codex-global reinstall-agy-global clean
 
 deps:
 	$(NPM) install
 
 build:
+	@if [ -f "$(FINGERPRINT_HAR)" ]; then \
+		$(NPM) run fingerprint -- --har "$(FINGERPRINT_HAR)" --out "$(FINGERPRINT)"; \
+	else \
+		echo "[build] no HAR found at $(FINGERPRINT_HAR); using existing/default fingerprint"; \
+	fi
 	$(NPM) run build
 
 check:
@@ -26,6 +37,9 @@ test:
 
 smoke:
 	OE_MCP_COOKIES_PATH="$(COOKIES)" $(NPM) run smoke
+
+fingerprint:
+	$(NPM) run fingerprint -- --har "$(FINGERPRINT_HAR)" --out "$(FINGERPRINT)"
 
 import-cookies:
 	OE_MCP_COOKIES_PATH="$(COOKIES)" $(NPM) run import-cookies -- --import "$(COOKIES)"

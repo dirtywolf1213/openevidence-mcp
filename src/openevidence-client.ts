@@ -4,6 +4,13 @@ import { constants } from "node:fs";
 import type { AppConfig } from "./config.js";
 import { CookieJar } from "./cookies.js";
 import {
+  BROWSER_FINGERPRINT_HEADER_NAMES,
+  DEFAULT_BROWSER_FINGERPRINT,
+  loadBrowserFingerprint,
+  type BrowserFingerprint,
+  type HeaderTuple,
+} from "./fingerprint.js";
+import {
   HttpError,
   RateLimitController,
   parseRetryAfterMs,
@@ -20,6 +27,7 @@ const PENDING_STATUSES = new Set(["queued", "pending", "processing", "running", 
 
 export class OpenEvidenceClient {
   private cookieJar: CookieJar | null = null;
+  private fingerprint: BrowserFingerprint = DEFAULT_BROWSER_FINGERPRINT;
   private readonly limiter: RateLimitController;
 
   constructor(private readonly config: AppConfig, rateLimitConfig?: Partial<RateLimitConfig>) {
@@ -35,6 +43,7 @@ export class OpenEvidenceClient {
 
   async init(): Promise<void> {
     await access(this.config.cookiesPath, constants.R_OK);
+    this.fingerprint = await loadBrowserFingerprint(this.config.fingerprintPath);
     this.cookieJar = await CookieJar.fromFile(this.config.cookiesPath, this.config.baseUrl);
   }
 
@@ -235,25 +244,125 @@ export class OpenEvidenceClient {
       throw new Error(`No cookies in ${this.config.cookiesPath} match ${fullUrl.hostname}`);
     }
 
-    const headers = new Headers(init.headers);
-    headers.set("cookie", cookie);
-    headers.set("origin", fullUrl.origin);
-    headers.set("referer", `${fullUrl.origin}/`);
-    if (!headers.has("accept")) {
-      headers.set("accept", "application/json, text/plain, */*");
-    }
-    if (!headers.has("user-agent")) {
-      headers.set(
-        "user-agent",
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36",
-      );
-    }
+    const headers = buildOpenEvidenceHeaders(fullUrl, init, cookie, this.fingerprint);
 
     return fetch(fullUrl, {
       ...init,
       headers,
     });
   }
+}
+
+export function buildOpenEvidenceHeaders(
+  fullUrl: URL,
+  init: RequestInit = {},
+  cookie: string,
+  fingerprint: BrowserFingerprint = DEFAULT_BROWSER_FINGERPRINT,
+): HeaderTuple[] {
+  const method = String(init.method ?? "GET").toUpperCase();
+  const overrides = normalizeHeaders(init.headers);
+  const extras = new Map(overrides);
+  const fingerprintHeaders = new Map(fingerprint.headers);
+  const fallbackHeaders = new Map(DEFAULT_BROWSER_FINGERPRINT.headers);
+  const headers = new Map<string, string>();
+
+  const setDefault = (name: string, value: string): void => {
+    headers.set(name, overrides.get(name) ?? value);
+    extras.delete(name);
+  };
+  const fingerprintDefault = (name: string): string => {
+    const value = fingerprintHeaders.get(name) ?? fallbackHeaders.get(name);
+    if (value === undefined) {
+      throw new Error(`OpenEvidence browser fingerprint is missing ${name}.`);
+    }
+    return value;
+  };
+
+  setDefault("accept", fingerprintDefault("accept"));
+  setDefault("accept-language", fingerprintDefault("accept-language"));
+  if (method !== "GET" && method !== "HEAD") {
+    setDefault("content-type", fingerprintDefault("content-type"));
+  } else if (overrides.has("content-type")) {
+    setDefault(
+      "content-type",
+      overrides.get("content-type") ?? fingerprintDefault("content-type"),
+    );
+  }
+  setDefault("origin", fullUrl.origin);
+  setDefault("priority", fingerprintDefault("priority"));
+  setDefault("referer", defaultRefererFor(fullUrl, method));
+  for (const name of BROWSER_FINGERPRINT_HEADER_NAMES) {
+    if (
+      name !== "accept" &&
+      name !== "accept-language" &&
+      name !== "content-type" &&
+      name !== "origin" &&
+      name !== "priority" &&
+      name !== "referer"
+    ) {
+      setDefault(name, fingerprintDefault(name));
+    }
+  }
+  headers.set("cookie", cookie);
+  extras.delete("cookie");
+
+  const ordered: HeaderTuple[] = [];
+  for (const name of orderedHeaderNames(fingerprint)) {
+    const value = headers.get(name);
+    if (value !== undefined) {
+      ordered.push([name, value]);
+    }
+  }
+  ordered.push(...extras);
+  return ordered;
+}
+
+function orderedHeaderNames(fingerprint: BrowserFingerprint): string[] {
+  const order: string[] = [];
+  const seen = new Set<string>();
+  const push = (name: string): void => {
+    if (!seen.has(name)) {
+      order.push(name);
+      seen.add(name);
+    }
+  };
+
+  for (const [name] of fingerprint.headers) {
+    if (BROWSER_FINGERPRINT_HEADER_NAMES.has(name)) {
+      push(name);
+    }
+  }
+  for (const [name] of DEFAULT_BROWSER_FINGERPRINT.headers) {
+    push(name);
+  }
+  push("cookie");
+  return order;
+}
+
+function normalizeHeaders(input: HeadersInit | undefined): Map<string, string> {
+  const normalized = new Map<string, string>();
+  if (!input) return normalized;
+
+  const headers = new Headers(input);
+  headers.forEach((value, name) => normalized.set(name.toLowerCase(), value));
+  return normalized;
+}
+
+function defaultRefererFor(fullUrl: URL, method: string): string {
+  if (method === "POST" && fullUrl.pathname === "/api/article") {
+    return `${fullUrl.origin}/ask`;
+  }
+
+  const articleMatch = fullUrl.pathname.match(/^\/api\/article\/([0-9a-f-]{36})(?:\/.*)?$/i);
+  if (articleMatch) {
+    return `${fullUrl.origin}/ask/${articleMatch[1]}`;
+  }
+
+  if (fullUrl.pathname === "/api/article/list") {
+    return `${fullUrl.origin}/history`;
+  }
+
+  return `${fullUrl.origin}/`;
 }
 
 /**

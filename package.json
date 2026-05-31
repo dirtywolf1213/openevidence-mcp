@@ -15,6 +15,7 @@
     "start": "node dist/server.js",
     "login": "tsx src/login.ts",
     "import-cookies": "tsx src/login.ts",
+    "fingerprint": "tsx src/fingerprint.ts",
     "check": "tsc -p tsconfig.json --noEmit",
     "test": "tsx --test test/*.test.ts",
     "smoke": "tsx src/smoke.ts"

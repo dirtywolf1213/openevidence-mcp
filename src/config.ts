@@ -1,12 +1,14 @@
 import { existsSync, mkdirSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { DEFAULT_RATE_LIMIT_CONFIG, type RateLimitConfig } from "./rate-limit.js";
 
 export interface AppConfig {
   baseUrl: string;
   cookiesPath: string;
+  fingerprintPath?: string;
   artifactDir: string;
   crossrefMailto?: string;
   crossrefValidate: boolean;
@@ -26,10 +28,20 @@ export function resolveConfig(): AppConfig {
     process.env.OE_MCP_COOKIES_PATH ??
     process.env.OE_MCP_AUTH_STATE_PATH ??
     (existsSync(localCookiesPath) ? localCookiesPath : path.join(rootDir, "auth", "cookies.json"));
+  const localFingerprintPath = path.resolve(process.cwd(), "openevidence-fingerprint.json");
+  const moduleFingerprintPath = path.resolve(
+    path.dirname(fileURLToPath(import.meta.url)),
+    "..",
+    "openevidence-fingerprint.json",
+  );
+  const fingerprintPath =
+    process.env.OE_MCP_FINGERPRINT_PATH ??
+    firstExistingPath(localFingerprintPath, moduleFingerprintPath);
 
   return {
     baseUrl: process.env.OE_MCP_BASE_URL ?? DEFAULT_BASE_URL,
     cookiesPath,
+    fingerprintPath,
     artifactDir: process.env.OE_MCP_ARTIFACT_DIR ?? DEFAULT_ARTIFACT_DIR,
     crossrefMailto: process.env.OE_MCP_CROSSREF_MAILTO,
     crossrefValidate: process.env.OE_MCP_CROSSREF_VALIDATE !== "0",
@@ -37,6 +49,10 @@ export function resolveConfig(): AppConfig {
     pollTimeoutMs: parseInt(process.env.OE_MCP_POLL_TIMEOUT_MS ?? "180000", 10),
     rateLimit: resolveRateLimitConfig(),
   };
+}
+
+function firstExistingPath(...paths: string[]): string | undefined {
+  return paths.find((candidate) => existsSync(candidate));
 }
 
 function resolveRateLimitConfig(): RateLimitConfig {
