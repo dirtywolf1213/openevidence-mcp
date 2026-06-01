@@ -4,7 +4,6 @@ import { constants } from "node:fs";
 import type { AppConfig } from "./config.js";
 import { CookieJar } from "./cookies.js";
 import {
-  BROWSER_FINGERPRINT_HEADER_NAMES,
   DEFAULT_BROWSER_FINGERPRINT,
   loadBrowserFingerprint,
   type BrowserFingerprint,
@@ -262,81 +261,46 @@ export function buildOpenEvidenceHeaders(
   const method = String(init.method ?? "GET").toUpperCase();
   const overrides = normalizeHeaders(init.headers);
   const extras = new Map(overrides);
-  const fingerprintHeaders = new Map(fingerprint.headers);
-  const fallbackHeaders = new Map(DEFAULT_BROWSER_FINGERPRINT.headers);
-  const headers = new Map<string, string>();
+  const isBodyMethod = method !== "GET" && method !== "HEAD";
 
-  const setDefault = (name: string, value: string): void => {
-    headers.set(name, overrides.get(name) ?? value);
-    extras.delete(name);
-  };
-  const fingerprintDefault = (name: string): string => {
-    const value = fingerprintHeaders.get(name) ?? fallbackHeaders.get(name);
-    if (value === undefined) {
-      throw new Error(`OpenEvidence browser fingerprint is missing ${name}.`);
-    }
-    return value;
-  };
-
-  setDefault("accept", fingerprintDefault("accept"));
-  setDefault("accept-language", fingerprintDefault("accept-language"));
-  if (method !== "GET" && method !== "HEAD") {
-    setDefault("content-type", fingerprintDefault("content-type"));
-  } else if (overrides.has("content-type")) {
-    setDefault(
-      "content-type",
-      overrides.get("content-type") ?? fingerprintDefault("content-type"),
-    );
-  }
-  setDefault("origin", fullUrl.origin);
-  setDefault("priority", fingerprintDefault("priority"));
-  setDefault("referer", defaultRefererFor(fullUrl, method));
-  for (const name of BROWSER_FINGERPRINT_HEADER_NAMES) {
-    if (
-      name !== "accept" &&
-      name !== "accept-language" &&
-      name !== "content-type" &&
-      name !== "origin" &&
-      name !== "priority" &&
-      name !== "referer"
-    ) {
-      setDefault(name, fingerprintDefault(name));
-    }
-  }
-  headers.set("cookie", cookie);
-  extras.delete("cookie");
+  // Per-request values that take precedence over the captured snapshot.
+  const dynamic = new Map<string, string>([
+    ["origin", fullUrl.origin],
+    ["referer", defaultRefererFor(fullUrl, method)],
+  ]);
 
   const ordered: HeaderTuple[] = [];
-  for (const name of orderedHeaderNames(fingerprint)) {
-    const value = headers.get(name);
-    if (value !== undefined) {
-      ordered.push([name, value]);
-    }
-  }
-  ordered.push(...extras);
-  return ordered;
-}
-
-function orderedHeaderNames(fingerprint: BrowserFingerprint): string[] {
-  const order: string[] = [];
-  const seen = new Set<string>();
-  const push = (name: string): void => {
-    if (!seen.has(name)) {
-      order.push(name);
-      seen.add(name);
-    }
+  const emitted = new Set<string>();
+  const emit = (name: string, value: string): void => {
+    ordered.push([name, value]);
+    emitted.add(name);
+    extras.delete(name);
   };
 
-  for (const [name] of fingerprint.headers) {
-    if (BROWSER_FINGERPRINT_HEADER_NAMES.has(name)) {
-      push(name);
+  // Emit EXACTLY the captured browser's header set, in its captured order, with
+  // no backfill from any other browser profile. This is what keeps a Safari
+  // fingerprint free of Chromium-only client hints (sec-ch-ua*) instead of
+  // sending a Safari UA alongside fabricated Chrome hints.
+  for (const [name, fpValue] of fingerprint.headers) {
+    if (emitted.has(name)) continue;
+    if (name === "content-type" && !isBodyMethod && !overrides.has("content-type")) {
+      continue; // no content-type on GET/HEAD unless the caller set one
     }
+    emit(name, overrides.get(name) ?? dynamic.get(name) ?? fpValue);
   }
-  for (const [name] of DEFAULT_BROWSER_FINGERPRINT.headers) {
-    push(name);
+
+  // Protocol-required headers the fingerprint may not have carried.
+  if (!emitted.has("origin")) emit("origin", overrides.get("origin") ?? dynamic.get("origin") ?? fullUrl.origin);
+  if (!emitted.has("referer")) {
+    emit("referer", overrides.get("referer") ?? dynamic.get("referer") ?? `${fullUrl.origin}/`);
   }
-  push("cookie");
-  return order;
+  if (isBodyMethod && !emitted.has("content-type")) {
+    emit("content-type", overrides.get("content-type") ?? "application/json");
+  }
+
+  emit("cookie", cookie);
+  ordered.push(...extras);
+  return ordered;
 }
 
 function normalizeHeaders(input: HeadersInit | undefined): Map<string, string> {

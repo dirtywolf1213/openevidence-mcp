@@ -11,7 +11,7 @@ auth/
 cookies.json
 cookies.*.json
 storage-state.json
-openevidence-fingerprint.json
+openevidence-fingerprint*.json
 *.har
 
 # packaged skill bundles may carry cookies — keep local

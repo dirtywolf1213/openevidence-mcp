@@ -88,3 +88,44 @@ test("buildOpenEvidenceHeaders: mirrors HAR browser signature for ask POST", () 
   assert.equal(h.get("sec-fetch-site"), "same-origin");
   assert.match(h.get("user-agent") ?? "", /Chrome\/148\.0\.0\.0 Safari\/537\.36/);
 });
+
+test("buildOpenEvidenceHeaders: profile-faithful — a Safari fingerprint emits no Chrome client hints", () => {
+  const safariFingerprint = {
+    version: 1 as const,
+    headers: [
+      ["content-type", "application/json"],
+      ["accept", "*/*"],
+      ["accept-language", "zh-TW,zh-Hant;q=0.9"],
+      ["sec-fetch-dest", "empty"],
+      ["sec-fetch-mode", "cors"],
+      ["sec-fetch-site", "same-origin"],
+      ["origin", "https://www.openevidence.com"],
+      ["referer", "https://www.openevidence.com/ask"],
+      ["priority", "u=3, i"],
+      [
+        "user-agent",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15",
+      ],
+    ] as [string, string][],
+  };
+
+  const tuples = buildOpenEvidenceHeaders(
+    new URL("https://www.openevidence.com/api/article"),
+    { method: "POST", headers: { "content-type": "application/json" }, body: "{}" },
+    "session=redacted",
+    safariFingerprint,
+  );
+  const names = tuples.map(([name]) => name);
+  const h = new Map(tuples);
+
+  // No Chromium-only hints backfilled from the built-in default.
+  assert.ok(!names.some((n) => n.startsWith("sec-ch-ua")), "must not emit sec-ch-ua*");
+  assert.ok(!names.includes("sec-gpc"), "must not emit sec-gpc (Safari omits it)");
+  // Carries Safari's own values, not Chrome's.
+  assert.match(h.get("user-agent") ?? "", /Version\/26\.0 Safari\/605\.1\.15/);
+  assert.equal(h.get("accept-language"), "zh-TW,zh-Hant;q=0.9");
+  assert.equal(h.get("priority"), "u=3, i");
+  // Dynamic + auth headers still present and last.
+  assert.equal(h.get("origin"), "https://www.openevidence.com");
+  assert.equal(names[names.length - 1], "cookie");
+});
