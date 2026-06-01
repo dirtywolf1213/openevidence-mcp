@@ -9,6 +9,7 @@ dist/
 .openevidence-mcp/
 auth/
 cookies.json
+cookies.*.json
 storage-state.json
 openevidence-fingerprint.json
 *.har
