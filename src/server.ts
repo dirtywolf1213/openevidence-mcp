@@ -89,9 +89,14 @@ server.registerTool(
 	"oe_article_get",
 	{
 		title: "OpenEvidence Article Get",
-		description: "Fetch article payload by article id.",
+		description:
+			"Fetch an article (answer) by id — the fetch-later half of fire-and-forget oe_ask. " +
+			"Returns the current status; if it is still 'pending' either retry later or pass wait_for_completion:true to block until the answer is ready.",
 		inputSchema: z.object({
 			article_id: z.string().uuid(),
+			wait_for_completion: z.boolean().default(false).optional(),
+			timeout_sec: z.number().int().min(5).max(600).default(120).optional(),
+			poll_interval_ms: z.number().int().min(300).max(10000).default(1200).optional(),
 			save_artifacts: z.boolean().default(true).optional(),
 			crossref_validate: z.boolean().default(true).optional(),
 			include_bibtex: z.boolean().default(true).optional(),
@@ -99,7 +104,12 @@ server.registerTool(
 	},
 	async (args) =>
 		withClient(async (client) => {
-			const article = await client.getArticle(args.article_id);
+			const article = (args.wait_for_completion ?? false)
+				? await client.waitForArticle(args.article_id, {
+						timeoutMs: (args.timeout_sec ?? 120) * 1000,
+						intervalMs: args.poll_interval_ms ?? config.pollIntervalMs,
+					})
+				: await client.getArticle(args.article_id);
 			const figures = extractFigures(article);
 			const answerRaw = extractAnswerText(article);
 			const artifacts =
@@ -111,6 +121,7 @@ server.registerTool(
 					: null;
 			return ok({
 				article_id: args.article_id,
+				status: String(article.status ?? ""),
 				extracted_answer_raw: answerRaw
 					? resolveVisualTags(answerRaw, figures)
 					: null,
@@ -128,13 +139,13 @@ server.registerTool(
 	{
 		title: "OpenEvidence Ask",
 		description:
-			"Create a question and optionally wait for completion. For follow-up question pass original_article_id. " +
+			"Create a question. Fire-and-forget by default: returns {article_id, status:'pending'} immediately so the browser tab is free for other sessions — fetch the finished answer later with oe_article_get (optionally wait_for_completion:true). Pass wait_for_completion:true here to block and return the answer in one call. For a follow-up question pass original_article_id. " +
 			"Submits POST /api/article through the connected browser-extension relay (runs in your real logged-in tab, DataDome-free); the direct Node POST is deprecated and no longer attempted. " +
 			"Requires the relay extension to be connected (see extension/README.md).",
 		inputSchema: z.object({
 			question: z.string().min(3).max(6000),
 			original_article_id: z.string().uuid().optional(),
-			wait_for_completion: z.boolean().default(true).optional(),
+			wait_for_completion: z.boolean().default(false).optional(),
 			timeout_sec: z.number().int().min(5).max(600).default(120).optional(),
 			poll_interval_ms: z
 				.number()
@@ -160,19 +171,10 @@ server.registerTool(
 			const timeoutMs = (args.timeout_sec ?? 120) * 1000;
 			const intervalMs = args.poll_interval_ms ?? config.pollIntervalMs;
 			
-			// The ask write goes exclusively through the browser-extension relay: it runs
-			// POST /api/article inside your real logged-in tab (DataDome-free). The legacy
-			// Node POST is deprecated and no longer attempted.
-			const relay = await getRelay();
-			if (!relay || !relay.isConnected()) {
-				return fail(
-					"OpenEvidence ask requires the browser relay extension to be connected. " +
-						"Install/enable it (see extension/README.md), keep the browser logged in " +
-						"to openevidence.com, then retry. The direct Node POST is deprecated " +
-						"(DataDome-blocked).",
-				);
-			}
-			
+			// The whole client is routed through the browser-extension relay (see
+			// withClient): POST /api/article runs inside your logged-in tab and the
+			// follow-up reads use that same session, so a freshly-created article is
+			// always visible to the poller (no creator/account mismatch).
 			const askPayload: OpenEvidenceAskRequest = {
 				question: args.question,
 				originalArticleId: args.original_article_id,
@@ -182,31 +184,19 @@ server.registerTool(
 				variantConfigurationFile: args.variant_configuration_file,
 			};
 			
-			const resp = await relay.request(
-				{
-					method: "POST",
-					path: "/api/article",
-					body: JSON.stringify(buildAskBody(askPayload)),
-				},
-				{ timeoutMs },
-			);
-			if (resp.status < 200 || resp.status >= 300) {
-				return fail(
-					`relay POST /api/article -> ${resp.status}${resp.status === 401 || resp.status === 403 ? " (the browser running the relay extension may not be logged in to OpenEvidence)" : ""} ${resp.body.slice(0, 160)}`,
-				);
-			}
-			const created = JSON.parse(resp.body) as { id?: string };
-			const articleId = String(created.id ?? "");
+			const created = await client.ask(askPayload);
+			const articleId = String((created as { id?: string }).id ?? "");
 			if (!articleId) {
-				return fail("relay POST returned no article id.");
+				return fail("ask POST returned no article id.");
 			}
 			
-			const waitForCompletion = args.wait_for_completion ?? true;
+			const waitForCompletion = args.wait_for_completion ?? false;
 			if (!waitForCompletion) {
 				return ok({
-					created,
 					article_id: articleId,
-					note: "Article created via the extension relay. Poll with oe_article_get.",
+					status: "pending",
+					note: "Fire-and-forget: article submitted. Fetch the answer with oe_article_get(article_id) — pass wait_for_completion:true there to block until it is ready.",
+					created,
 				});
 			}
 			
