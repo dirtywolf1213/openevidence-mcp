@@ -23,11 +23,16 @@ export interface AppConfig {
   relayEnabled: boolean;
   /** Port the relay HTTP server listens on (must match the extension). */
   relayPort: number;
+  /** Pidfile written by the standalone relay daemon (for upgrade-time respawn). */
+  relayPidPath: string;
+  /** Log file the detached relay daemon appends to. */
+  relayLogPath: string;
   /**
-   * "off" (default): the relay is used only as the DataDome fallback for the ask
-   * POST. "all": route EVERY OpenEvidence request through the extension (the
-   * browser session is the sole auth — no cookies.json needed) whenever it is
-   * connected. Set with OE_MCP_RELAY_TRANSPORT=all.
+   * "all" (default): route EVERY OpenEvidence request through the extension; the
+   * browser session is the sole auth (no cookies.json) and the MCP server refuses
+   * to fall back to the cookie path. "off": legacy escape hatch — reads go over
+   * cookies.json and the relay is used only as the DataDome fallback for the ask
+   * POST. Set OE_MCP_RELAY_TRANSPORT=off to opt out.
    */
   relayTransport: "off" | "all";
   rateLimit: RateLimitConfig;
@@ -65,7 +70,9 @@ export function resolveConfig(): AppConfig {
     pollTimeoutMs: parseInt(process.env.OE_MCP_POLL_TIMEOUT_MS ?? "180000", 10),
     relayEnabled: process.env.OE_MCP_RELAY !== "0",
     relayPort: parseInt(process.env.OE_MCP_RELAY_PORT ?? "8787", 10),
-    relayTransport: process.env.OE_MCP_RELAY_TRANSPORT === "all" ? "all" : "off",
+    relayPidPath: process.env.OE_MCP_RELAY_PID_PATH ?? path.join(rootDir, "relay.pid"),
+    relayLogPath: process.env.OE_MCP_RELAY_LOG_PATH ?? path.join(rootDir, "relay.log"),
+    relayTransport: process.env.OE_MCP_RELAY_TRANSPORT === "off" ? "off" : "all",
     rateLimit: resolveRateLimitConfig(),
   };
 }
@@ -100,4 +107,5 @@ function resolveRateLimitConfig(): RateLimitConfig {
 export function ensureConfigDirs(config: AppConfig): void {
   mkdirSync(path.dirname(config.cookiesPath), { recursive: true });
   mkdirSync(config.artifactDir, { recursive: true });
+  mkdirSync(path.dirname(config.relayPidPath), { recursive: true });
 }

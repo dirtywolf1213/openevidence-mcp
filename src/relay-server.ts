@@ -18,6 +18,13 @@ const CONNECTED_SLACK_MS = 8_000; // grace beyond POLL_HOLD before we call it go
 const DEFAULT_TIMEOUT_MS = 90_000;
 const MAX_BODY_BYTES = 4_000_000;
 
+/**
+ * Protocol version of the daemon-facing surface (`POST /relay`, `/health` shape).
+ * Bump whenever the client↔daemon contract changes so a stale daemon from an
+ * older build is detected and respawned instead of serving an incompatible API.
+ */
+export const RELAY_VERSION = 1;
+
 /** A request for the extension to run inside the OpenEvidence tab. */
 export interface RelayRequest {
   method: string;
@@ -156,7 +163,46 @@ export function startRelayServer(options: RelayServerOptions): Promise<RelayServ
     }
 
     if (method === "GET" && url.startsWith("/health")) {
-      sendJson(res, 200, { ok: true, connected: isConnected(), pending: pending.size });
+      sendJson(res, 200, {
+        ok: true,
+        connected: isConnected(),
+        pending: pending.size,
+        version: RELAY_VERSION,
+        pid: process.pid,
+      });
+      return;
+    }
+
+    // Daemon-facing bridge: an out-of-process MCP server submits a request here
+    // and we run it through the extension on its behalf. Mirrors the in-process
+    // `request()` so a remote RelayClient is indistinguishable from a local host.
+    if (method === "POST" && url.startsWith("/relay")) {
+      readBody(req)
+        .then(async (raw) => {
+          const data = JSON.parse(raw) as {
+            method?: string;
+            path?: string;
+            body?: string;
+            timeoutMs?: number;
+          };
+          if (!data.path || !data.method) {
+            sendJson(res, 400, { ok: false, error: "method and path are required" });
+            return;
+          }
+          try {
+            const result = await request(
+              { method: data.method, path: data.path, body: data.body },
+              { timeoutMs: data.timeoutMs },
+            );
+            sendJson(res, 200, { ok: true, status: result.status, body: result.body });
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            // 504 when the extension never answered, 502 for everything else.
+            const code = /did not respond within/.test(message) ? 504 : 502;
+            sendJson(res, code, { ok: false, error: message });
+          }
+        })
+        .catch((err: unknown) => sendJson(res, 400, { ok: false, error: String(err) }));
       return;
     }
 

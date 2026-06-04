@@ -129,7 +129,7 @@ npm run login
 npm run smoke
 ```
 
-> ⚠️ **Asking requires the browser extension.** `npm run smoke` validates auth + reads only (those work over cookies). `oe_ask` submits the request through a small Brave/Chrome relay extension that runs it inside your own logged-in tab — set it up **before asking**: see the **Browser extension relay** section below and [`extension/README.md`](extension/README.md). Reads (`oe_history_list`, `oe_article_get`, collections) work without it.
+> ⚠️ **The MCP server runs entirely through the browser extension by default.** `oe_ask` **and all reads** (`oe_history_list`, `oe_article_get`, `oe_collections_*`) are issued inside your own logged-in tab via a small Brave/Chrome relay extension — set it up **before using any tool**: see the **Browser extension relay** section below and [`extension/README.md`](extension/README.md). Set `OE_MCP_RELAY_TRANSPORT=off` to fall back to the legacy `cookies.json` read path (asks still need the extension). The cookie path also still backs the Python collections tooling and the `npm run doctor` / `npm run smoke` / `npm run login` CLIs (those validate auth + reads over cookies directly).
 
 `make build` extracts `openevidence-fingerprint.json` from the HAR when the HAR exists, then compiles `dist/server.js`. The cookie file can be a browser-exported cookies array or a storage-state object with a `cookies` array.
 
@@ -266,7 +266,7 @@ It flags the common ways the `datadome` cookie goes stale:
 - **`fingerprint-default` (WARN)** — no `openevidence-fingerprint.json`; the built-in macOS/arm signature is in use.
 - **`datadome-live` (FAIL)** — a live request was actually challenged (definitive staleness). Exit code is non-zero when any check fails, so it works in CI/pre-flight.
 
-### Browser extension relay (required for `oe_ask` — invisible, no 403)
+### Browser extension relay (required — the MCP server runs through it, invisible, no 403)
 
 A small companion **Chromium extension** — works in Chrome, Edge, Brave, Arc, Vivaldi, Opera — removes the DataDome problem entirely: the MCP server submits the ask `POST` **inside your real logged-in tab** (genuine origin/cookies/TLS), with **no visible navigation**. It's a generic authenticated fetch proxy — all logic stays in Node; the extension just lends its browser session over a localhost relay. The call is handled by **whichever browser has the extension installed and is logged into OpenEvidence**, so install it in the browser you use for OpenEvidence (and run it in one browser at a time).
 
@@ -276,9 +276,11 @@ Install (one time):
 2. Open your browser's extensions page (`chrome://extensions`, `edge://extensions`, `brave://extensions`, …) → **Developer mode** → **Load unpacked** → select the unzipped (or `extension/dist/`) folder.
 3. Stay **logged in to openevidence.com** in that browser, then run the MCP server — it auto-connects.
 
-Then `oe_ask` submits through the extension (it is the only ask path). Set `OE_MCP_RELAY_TRANSPORT=all` to route **every** request through the extension's session — `cookies.json` becomes optional. Check the link: `curl http://127.0.0.1:8787/health`. Full docs: [`extension/`](extension/README.md).
+By default (`OE_MCP_RELAY_TRANSPORT=all`) **every** MCP request — `oe_ask` and all reads — runs through the extension's session, and the server will not fall back to `cookies.json`; if the extension isn't connected, tools fail fast with install guidance. `cookies.json` is then used only by the Python collections tooling and `npm run doctor` / `login`. Set `OE_MCP_RELAY_TRANSPORT=off` to route reads over `cookies.json` instead (asks still go through the extension). Check the link: `curl http://127.0.0.1:8787/health`. Full docs: [`extension/`](extension/README.md).
 
 > The release also ships a signed `.crx`; note Chromium browsers block `.crx` files loaded from outside the Web Store, so **Load unpacked from the zip** is the normal install. The `.crx` is for enterprise-policy / reference use.
+
+**One tab, many sessions.** The relay runs as a standalone daemon (auto-spawned, see `npm run relay`) that owns port 8787 and is shared by every MCP server, so you can run OpenEvidence from any number of Claude sessions concurrently — they all funnel through the single logged-in tab. The daemon outlives session restarts and is respawned automatically if it dies; on an upgrade a stale daemon from an older build is detected (`/health` reports `version`) and replaced.
 
 ## How To Ask Questions
 
@@ -309,15 +311,16 @@ The underlying MCP call looks like this:
   "tool": "oe_ask",
   "arguments": {
     "question": "DLBCL frontline treatment landscape NCCN v3.2026",
-    "wait_for_completion": true,
     "include_bibtex": true
   }
 }
 ```
 
-`oe_ask` returns:
+**`oe_ask` is fire-and-forget by default:** it returns `{article_id, status:"pending"}` the moment the question is submitted, freeing the browser tab for other sessions. Fetch the finished answer with `oe_article_get(article_id)` — pass `wait_for_completion: true` there to block until it is ready. For the old one-shot behavior (submit and wait in a single call), pass `"wait_for_completion": true` to `oe_ask` itself.
 
-- the OpenEvidence article payload
+The completed article (via `oe_article_get`, or `oe_ask` with `wait_for_completion:true`) returns:
+
+- the OpenEvidence article payload and `status`
 - `article_id`
 - extracted answer markdown as `extracted_answer_raw`
 - artifact file paths

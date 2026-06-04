@@ -4,6 +4,45 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+- **Shared relay daemon — many sessions, one tab.** The relay no longer runs
+  in-process inside each MCP server (where only one session could bind port 8787;
+  the rest silently failed with "relay not connected"). A standalone daemon
+  (`src/relay-daemon.ts`, `npm run relay`) now owns the port and outlives every
+  session; each MCP server connects as a client (`src/relay-client.ts`) via a new
+  `POST /relay` bridge. The daemon is auto-spawned detached on first need,
+  idempotent (a second daemon that loses the bind race exits 0), and self-healing
+  (a crashed daemon is respawned + the in-flight request retried). `/health` now
+  reports `version` + `pid`; a stale daemon from an older build is detected and
+  replaced on upgrade. New env: `OE_MCP_RELAY_PID_PATH`, `OE_MCP_RELAY_LOG_PATH`
+  (default `~/.openevidence-mcp/relay.pid` / `relay.log`).
+
+### Changed
+- **`oe_ask` is fire-and-forget by default.** It now returns
+  `{article_id, status:"pending"}` immediately and frees the browser tab for other
+  sessions; fetch the finished answer with `oe_article_get(article_id)` (which gained
+  `wait_for_completion`/`timeout_sec`/`poll_interval_ms` and now reports `status`).
+  Pass `oe_ask(..., wait_for_completion:true)` to keep the old one-shot blocking
+  behavior. Concurrency works either way now that the relay is shared.
+- **BREAKING:** `OE_MCP_RELAY_TRANSPORT=all` is now the **default**. The MCP server
+  routes every request — `oe_ask` and all reads (`oe_history_list`,
+  `oe_article_get`, `oe_collections_*`) — through the browser-extension relay and
+  no longer falls back to `cookies.json`; when the extension isn't connected, tools
+  fail fast with install guidance. Headless reads now require the extension — set
+  `OE_MCP_RELAY_TRANSPORT=off` to restore the cookie read path. `cookies.json`
+  remains the auth for the Python collections tooling and `npm run doctor` / `login`.
+- `oe_ask` now submits via the shared client (`client.ask()`) over the relay rather
+  than a bespoke relay call, so the POST and its follow-up reads share one browser
+  session — a freshly-created article is always visible to the poller (no
+  creator/account mismatch between a browser tab and `cookies.json`).
+
+### Fixed
+- `waitForArticle` polls through the transient `404` a just-created article returns
+  until OpenEvidence finishes provisioning it, instead of aborting the ask on the
+  first poll.
+
 ## [0.3.0] - 2026-06-04
 
 ### Added

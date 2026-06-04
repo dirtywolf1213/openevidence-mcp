@@ -8,11 +8,10 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 
-import { startRelayServer, type RelayServer } from "./relay-server.js";
+import { connectSharedRelay, type RelayClient } from "./relay-client.js";
 import { extractFigures, saveArticleArtifacts } from "./citations.js";
 import { ensureConfigDirs, resolveConfig } from "./config.js";
 import {
-	buildAskBody,
 	extractAnswerText,
 	OpenEvidenceClient,
 	resolveVisualTags,
@@ -28,22 +27,22 @@ import type { OpenEvidenceAskRequest } from "./types.js";
 const config = resolveConfig();
 ensureConfigDirs(config);
 
-let relayServerPromise: Promise<RelayServer | null> | null = null;
-function getRelay(): Promise<RelayServer | null> {
+// Connect to the shared relay daemon (spawning it if needed). The daemon owns
+// the relay port and outlives every session, so any number of MCP servers can
+// funnel through one browser tab. See relay-client.ts / relay-daemon.ts.
+let relayClientPromise: Promise<RelayClient | null> | null = null;
+function getRelay(): Promise<RelayClient | null> {
 	if (!config.relayEnabled) return Promise.resolve(null);
-	if (!relayServerPromise) {
-		relayServerPromise = startRelayServer({
-			port: config.relayPort,
-			logger: (m) => process.stderr.write(`[relay] ${m}\n`),
-		}).catch((err) => {
-			process.stderr.write(`[relay] failed to start: ${String(err)}\n`);
+	if (!relayClientPromise) {
+		relayClientPromise = connectSharedRelay(config).catch((err) => {
+			process.stderr.write(`[relay] failed to connect: ${String(err)}\n`);
 			return null;
 		});
 	}
-	return relayServerPromise;
+	return relayClientPromise;
 }
 
-// Start the relay eagerly so the extension can connect as soon as the server is up.
+// Connect eagerly so the daemon is up by the time the first tool call lands.
 void getRelay();
 
 const server = new McpServer({
