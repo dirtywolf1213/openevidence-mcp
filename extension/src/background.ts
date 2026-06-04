@@ -1,9 +1,10 @@
 // OpenEvidence MCP Relay — MV3 service worker (TypeScript source).
 //
-// Long-polls the local relay (GET /poll). When the MCP server hands us an ask
-// body, we run POST /api/article INSIDE a parked OpenEvidence tab (page-context
-// origin/cookies/TLS — DataDome passes), read the new article id from the
-// response, and POST it back to /result.
+// A generic authenticated fetch proxy. Long-polls the local relay (GET /poll);
+// when the MCP server hands us {method, path, body}, we run that fetch INSIDE a
+// parked OpenEvidence tab (page-context origin/cookies/TLS — DataDome passes) and
+// post the raw {status, body} back to /result. All OpenEvidence logic stays in
+// Node; this worker just lends it the browser's authenticated network stack.
 //
 // The continuous long-poll keeps this service worker alive; a 1-minute alarm
 // restarts the loop if the worker was ever evicted.
@@ -17,9 +18,15 @@ const OE_TAB_KEY = "oeRelayTabId";
 
 let polling = false;
 
+interface RelayRequest {
+  method: string;
+  path: string;
+  body?: string;
+}
+
 interface InTabResult {
   status: number;
-  text: string;
+  body: string;
   error?: string;
 }
 
@@ -30,32 +37,18 @@ async function getStoredTabId(): Promise<number | undefined> {
   return o[OE_TAB_KEY] as number | undefined;
 }
 
-async function setStoredTabId(id: number | undefined): Promise<void> {
+async function setStoredTabId(id: number): Promise<void> {
   await chrome.storage.session.set({ [OE_TAB_KEY]: id });
 }
 
-function waitForTabComplete(tabId: number, timeoutMs = 30_000): Promise<chrome.tabs.Tab> {
-  return new Promise((resolve, reject) => {
-    const deadline = Date.now() + timeoutMs;
-    const tick = async (): Promise<void> => {
-      try {
-        const t = await chrome.tabs.get(tabId);
-        if (t.status === "complete" && (t.url ?? "").startsWith(OE_BASE)) {
-          resolve(t);
-          return;
-        }
-      } catch (e) {
-        reject(e);
-        return;
-      }
-      if (Date.now() > deadline) {
-        reject(new Error("dedicated OE tab did not finish loading in time"));
-        return;
-      }
-      setTimeout(tick, 400);
-    };
-    void tick();
-  });
+async function waitForTabComplete(tabId: number, timeoutMs = 30_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const t = await chrome.tabs.get(tabId);
+    if (t.status === "complete" && (t.url ?? "").startsWith(OE_BASE)) return;
+    if (Date.now() > deadline) throw new Error("dedicated OE tab did not finish loading in time");
+    await new Promise((r) => setTimeout(r, 400));
+  }
 }
 
 // Returns the id of a dedicated, logged-in OpenEvidence tab, creating a pinned
@@ -82,48 +75,41 @@ async function ensureOeTab(): Promise<number> {
   return id;
 }
 
-// ---- the in-tab POST ----------------------------------------------------------
+// ---- the in-tab fetch ---------------------------------------------------------
 
 // Serialized and run INSIDE the OpenEvidence tab — keep it self-contained.
-function inTabAsk(body: unknown): Promise<InTabResult> {
-  return fetch("/api/article", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(body),
-    credentials: "include",
-  })
-    .then((r) => r.text().then((text) => ({ status: r.status, text })))
-    .catch((e) => ({ status: 0, text: "", error: String(e) }));
+function inTabProxy(req: RelayRequest): Promise<InTabResult> {
+  const init: RequestInit = { method: req.method, credentials: "include" };
+  if (req.body != null) {
+    init.body = req.body;
+    init.headers = { "content-type": "application/json" };
+  }
+  return fetch(req.path, init)
+    .then((r) => r.text().then((body) => ({ status: r.status, body })))
+    .catch((e) => ({ status: 0, body: "", error: String(e) }));
 }
 
-async function runAskInTab(body: unknown): Promise<string> {
+async function runProxy(req: RelayRequest): Promise<InTabResult> {
   const tabId = await ensureOeTab();
   const [injection] = await chrome.scripting.executeScript({
     target: { tabId },
-    func: inTabAsk,
-    args: [body],
+    func: inTabProxy,
+    args: [req],
   });
   const out = injection?.result as InTabResult | undefined;
   if (!out) throw new Error("no result from in-tab fetch");
   if (out.error) throw new Error(out.error);
-  if (out.status === 403) throw new Error("DataDome 403 even from the tab (re-auth in the browser)");
-  if (out.status < 200 || out.status >= 300) {
-    throw new Error(`POST /api/article -> ${out.status} ${out.text.slice(0, 200)}`);
-  }
-  let data: { id?: string; article_id?: string };
-  try {
-    data = JSON.parse(out.text);
-  } catch {
-    throw new Error("POST /api/article returned non-JSON");
-  }
-  const articleId = data.id ?? data.article_id;
-  if (!articleId) throw new Error("POST /api/article returned no id");
-  return String(articleId);
+  return out; // pass status/body through verbatim; Node decides on 4xx/5xx
 }
 
 // ---- relay loop ---------------------------------------------------------------
 
-async function postResult(payload: { reqId: string; articleId?: string; error?: string }): Promise<void> {
+async function postResult(payload: {
+  reqId: string;
+  status?: number;
+  body?: string;
+  error?: string;
+}): Promise<void> {
   try {
     await fetch(`${RELAY_BASE}/result`, {
       method: "POST",
@@ -135,10 +121,10 @@ async function postResult(payload: { reqId: string; articleId?: string; error?: 
   }
 }
 
-async function handleAsk(reqId: string, body: unknown): Promise<void> {
+async function handleRequest(reqId: string, req: RelayRequest): Promise<void> {
   try {
-    const articleId = await runAskInTab(body);
-    await postResult({ reqId, articleId });
+    const { status, body } = await runProxy(req);
+    await postResult({ reqId, status, body });
   } catch (e) {
     await postResult({ reqId, error: e instanceof Error ? e.message : String(e) });
   }
@@ -147,8 +133,8 @@ async function handleAsk(reqId: string, body: unknown): Promise<void> {
 async function pollOnce(): Promise<void> {
   const res = await fetch(`${RELAY_BASE}/poll`, { method: "GET" });
   if (res.status === 200) {
-    const { reqId, body } = (await res.json()) as { reqId: string; body: unknown };
-    void handleAsk(reqId, body); // don't block the next poll
+    const { reqId, req } = (await res.json()) as { reqId: string; req: RelayRequest };
+    void handleRequest(reqId, req); // don't block the next poll
   } else {
     await res.text().catch(() => "");
   }

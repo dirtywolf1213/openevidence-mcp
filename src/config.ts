@@ -30,6 +30,13 @@ export interface AppConfig {
   relayEnabled: boolean;
   /** Port the relay HTTP server listens on (must match the extension). */
   relayPort: number;
+  /**
+   * "off" (default): the relay is used only as the DataDome fallback for the ask
+   * POST. "all": route EVERY OpenEvidence request through the extension (the
+   * browser session is the sole auth — no cookies.json needed) whenever it is
+   * connected. Set with OE_MCP_RELAY_TRANSPORT=all.
+   */
+  relayTransport: "off" | "all";
   rateLimit: RateLimitConfig;
 }
 
@@ -66,6 +73,7 @@ export function resolveConfig(): AppConfig {
     browserFallback: process.env.OE_MCP_BROWSER_FALLBACK !== "0",
     relayEnabled: process.env.OE_MCP_RELAY !== "0",
     relayPort: parseInt(process.env.OE_MCP_RELAY_PORT ?? "8787", 10),
+    relayTransport: process.env.OE_MCP_RELAY_TRANSPORT === "all" ? "all" : "off",
     rateLimit: resolveRateLimitConfig(),
   };
 }

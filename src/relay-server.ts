@@ -3,28 +3,41 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 /**
  * In-process relay between the MCP server and a Brave/Chrome extension.
  *
- * The extension long-polls `GET /poll`; when an ask is submitted we hand it the
- * request body, the extension runs the `POST /api/article` *inside* a parked
- * OpenEvidence tab (page-context Origin/Referer/cookies/TLS ⇒ DataDome passes),
- * then posts the new article id to `POST /result`. The long-poll doubles as a
- * keepalive that stops the MV3 service worker from sleeping.
+ * The extension long-polls `GET /poll`; when the MCP server issues a request we
+ * hand it `{method, path, body}`, the extension runs that `fetch` *inside* a
+ * parked OpenEvidence tab (page-context Origin/Referer/cookies/TLS ⇒ DataDome
+ * passes), then posts the `{status, body}` back to `POST /result`. The extension
+ * is a generic authenticated fetch proxy — all OpenEvidence logic stays in Node.
  *
- * Localhost-only, single-client. No WebSocket dependency — a held HTTP response
- * is enough for the one push we need.
+ * The long-poll doubles as a keepalive for the MV3 service worker. Localhost-only,
+ * single-client. No WebSocket dependency — a held HTTP response is the one push.
  */
 
 const POLL_HOLD_MS = 25_000; // how long a /poll request is held before a 204
 const CONNECTED_SLACK_MS = 8_000; // grace beyond POLL_HOLD before we call it gone
-const DEFAULT_SUBMIT_TIMEOUT_MS = 90_000;
-const MAX_BODY_BYTES = 1_000_000;
+const DEFAULT_TIMEOUT_MS = 90_000;
+const MAX_BODY_BYTES = 4_000_000;
 
-interface PendingAsk {
+/** A request for the extension to run inside the OpenEvidence tab. */
+export interface RelayRequest {
+  method: string;
+  path: string;
+  /** Pre-serialized request body (JSON string), or undefined for GET/HEAD. */
+  body?: string;
+}
+
+/** The raw response the extension read from the in-tab fetch. */
+export interface RelayResponse {
+  status: number;
+  body: string;
+}
+
+interface PendingReq {
   reqId: string;
-  body: unknown;
-  resolve: (value: { articleId: string }) => void;
+  req: RelayRequest;
+  resolve: (value: RelayResponse) => void;
   reject: (err: Error) => void;
   timer: ReturnType<typeof setTimeout>;
-  delivered: boolean;
 }
 
 interface Waiter {
@@ -36,8 +49,8 @@ export interface RelayServer {
   readonly port: number;
   /** True while the extension is actively long-polling (recently seen). */
   isConnected(): boolean;
-  /** Hand a request body to the extension; resolves with the created article id. */
-  submitAsk(body: unknown, opts?: { timeoutMs?: number }): Promise<{ articleId: string }>;
+  /** Run a request through the extension; resolves with its raw {status, body}. */
+  request(req: RelayRequest, opts?: { timeoutMs?: number }): Promise<RelayResponse>;
   close(): void;
 }
 
@@ -53,8 +66,8 @@ export function startRelayServer(options: RelayServerOptions): Promise<RelayServ
   const now = options.now ?? (() => Date.now());
   const log = options.logger ?? (() => {});
 
-  const pending = new Map<string, PendingAsk>();
-  const outbox: PendingAsk[] = [];
+  const pending = new Map<string, PendingReq>();
+  const outbox: PendingReq[] = [];
   const waiters: Waiter[] = [];
   let lastPollAt = 0;
   let counter = 0;
@@ -71,21 +84,24 @@ export function startRelayServer(options: RelayServerOptions): Promise<RelayServ
     res.end(JSON.stringify(body));
   };
 
-  // Deliver one queued ask to one waiting long-poll, if both exist.
+  const deliver = (res: ServerResponse, p: PendingReq): void => {
+    sendJson(res, 200, { reqId: p.reqId, req: p.req });
+    log(`relay: delivered ${p.req.method} ${p.req.path} (${p.reqId})`);
+  };
+
+  // Deliver queued requests to waiting long-polls, while both exist.
   const flush = (): void => {
     while (waiters.length > 0 && outbox.length > 0) {
-      const ask = outbox.shift();
-      if (!ask) break;
-      if (!pending.has(ask.reqId)) continue; // already timed out
+      const p = outbox.shift();
+      if (!p) break;
+      if (!pending.has(p.reqId)) continue; // already timed out
       const waiter = waiters.shift();
       if (!waiter) {
-        outbox.unshift(ask);
+        outbox.unshift(p);
         break;
       }
       clearTimeout(waiter.timer);
-      ask.delivered = true;
-      sendJson(waiter.res, 200, { reqId: ask.reqId, body: ask.body });
-      log(`relay: delivered ask ${ask.reqId} to extension`);
+      deliver(waiter.res, p);
     }
   };
 
@@ -119,15 +135,11 @@ export function startRelayServer(options: RelayServerOptions): Promise<RelayServ
 
     if (method === "GET" && url.startsWith("/poll")) {
       lastPollAt = now();
-      if (outbox.length > 0) {
-        const ask = outbox.find((a) => pending.has(a.reqId));
-        if (ask) {
-          outbox.splice(outbox.indexOf(ask), 1);
-          ask.delivered = true;
-          sendJson(res, 200, { reqId: ask.reqId, body: ask.body });
-          log(`relay: delivered ask ${ask.reqId} to extension (immediate)`);
-          return;
-        }
+      const p = outbox.find((x) => pending.has(x.reqId));
+      if (p) {
+        outbox.splice(outbox.indexOf(p), 1);
+        deliver(res, p);
+        return;
       }
       const timer = setTimeout(() => {
         const i = waiters.findIndex((w) => w.res === res);
@@ -153,28 +165,25 @@ export function startRelayServer(options: RelayServerOptions): Promise<RelayServ
         .then((raw) => {
           const data = JSON.parse(raw) as {
             reqId?: string;
-            articleId?: string;
+            status?: number;
+            body?: string;
             error?: string;
           };
-          const ask = data.reqId ? pending.get(data.reqId) : undefined;
-          if (!ask) {
+          const p = data.reqId ? pending.get(data.reqId) : undefined;
+          if (!p) {
             sendJson(res, 404, { ok: false, error: "unknown reqId" });
             return;
           }
-          clearTimeout(ask.timer);
-          pending.delete(ask.reqId);
+          clearTimeout(p.timer);
+          pending.delete(p.reqId);
           if (data.error) {
-            ask.reject(new Error(`extension: ${data.error}`));
-          } else if (data.articleId) {
-            ask.resolve({ articleId: data.articleId });
+            p.reject(new Error(`extension: ${data.error}`));
           } else {
-            ask.reject(new Error("extension returned no articleId"));
+            p.resolve({ status: data.status ?? 0, body: data.body ?? "" });
           }
           sendJson(res, 200, { ok: true });
         })
-        .catch((err: unknown) => {
-          sendJson(res, 400, { ok: false, error: String(err) });
-        });
+        .catch((err: unknown) => sendJson(res, 400, { ok: false, error: String(err) }));
       return;
     }
 
@@ -185,23 +194,20 @@ export function startRelayServer(options: RelayServerOptions): Promise<RelayServ
     return now() - lastPollAt < POLL_HOLD_MS + CONNECTED_SLACK_MS;
   }
 
-  function submitAsk(
-    body: unknown,
-    opts?: { timeoutMs?: number },
-  ): Promise<{ articleId: string }> {
-    const timeoutMs = opts?.timeoutMs ?? DEFAULT_SUBMIT_TIMEOUT_MS;
+  function request(req: RelayRequest, opts?: { timeoutMs?: number }): Promise<RelayResponse> {
+    const timeoutMs = opts?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     counter += 1;
-    const reqId = `ask-${counter}-${now().toString(36)}`;
-    return new Promise<{ articleId: string }>((resolve, reject) => {
+    const reqId = `req-${counter}-${now().toString(36)}`;
+    return new Promise<RelayResponse>((resolve, reject) => {
       const timer = setTimeout(() => {
         pending.delete(reqId);
-        const i = outbox.findIndex((a) => a.reqId === reqId);
+        const i = outbox.findIndex((x) => x.reqId === reqId);
         if (i >= 0) outbox.splice(i, 1);
-        reject(new Error(`relay: extension did not return an article within ${timeoutMs}ms`));
+        reject(new Error(`relay: extension did not respond within ${timeoutMs}ms`));
       }, timeoutMs);
-      const ask: PendingAsk = { reqId, body, resolve, reject, timer, delivered: false };
-      pending.set(reqId, ask);
-      outbox.push(ask);
+      const p: PendingReq = { reqId, req, resolve, reject, timer };
+      pending.set(reqId, p);
+      outbox.push(p);
       flush();
     });
   }
@@ -216,12 +222,12 @@ export function startRelayServer(options: RelayServerOptions): Promise<RelayServ
       resolve({
         port: boundPort,
         isConnected,
-        submitAsk,
+        request,
         close: () => {
           for (const w of waiters) clearTimeout(w.timer);
-          for (const ask of pending.values()) {
-            clearTimeout(ask.timer);
-            ask.reject(new Error("relay server closed"));
+          for (const p of pending.values()) {
+            clearTimeout(p.timer);
+            p.reject(new Error("relay server closed"));
           }
           waiters.length = 0;
           pending.clear();

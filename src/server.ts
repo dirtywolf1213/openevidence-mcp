@@ -238,10 +238,24 @@ server.registerTool(
 						process.stderr.write(
 							`[oe_ask] Node POST DataDome-blocked; routing via the Brave extension relay.\n`,
 						);
-						const submitted = await relay.submitAsk(buildAskBody(askPayload), {
-							timeoutMs,
-						});
-						articleId = submitted.articleId;
+						const resp = await relay.request(
+							{
+								method: "POST",
+								path: "/api/article",
+								body: JSON.stringify(buildAskBody(askPayload)),
+							},
+							{ timeoutMs },
+						);
+						if (resp.status < 200 || resp.status >= 300) {
+							throw new Error(
+								`relay POST /api/article -> ${resp.status} ${resp.body.slice(0, 200)}`,
+							);
+						}
+						const created = JSON.parse(resp.body) as { id?: string };
+						articleId = String(created.id ?? "");
+						if (!articleId) {
+							throw new Error("relay POST returned no article id");
+						}
 						note =
 							"Node POST was DataDome-blocked; submitted via the Brave extension relay.";
 						article = await client.waitForArticle(articleId, { timeoutMs, intervalMs });
@@ -551,6 +565,10 @@ async function withClient(
 	}>,
 ) {
 	const client = new OpenEvidenceClient(config);
+	if (config.relayTransport === "all") {
+		const relay = await getRelay();
+		if (relay && relay.isConnected()) client.useRelay(relay);
+	}
 	try {
 		await client.init();
 		const auth = await client.getAuthStatus();
