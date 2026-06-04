@@ -1,6 +1,6 @@
 {
 	"name": "openevidence-mcp",
-	"version": "0.2.0",
+	"version": "0.3.0",
 	"description": "Open-source MCP server for OpenEvidence clinical platform. Cookie-file auth, no API key required.",
 	"main": "dist/server.js",
 	"bin": {
@@ -24,13 +24,17 @@
 	},
 	"files": [
 		"dist/",
-		"scripts/",
+		"scripts/*.py",
+		"scripts/*.sh",
+		"scripts/*.ps1",
 		"examples/",
 		".env.example",
 		"LICENSE",
 		"NOTICE",
 		"README.md",
-		"README.AI.md"
+		"README.AI.md",
+		"CHANGELOG.md",
+		"CITATION.cff"
 	],
 	"engines": {
 		"node": ">=20"
@@ -45,7 +49,10 @@
 		"healthcare",
 		"cookies",
 		"codex",
-		"claude"
+		"claude",
+		"browser-extension",
+		"datadome",
+		"relay"
 	],
 	"repository": {
 		"type": "git",
@@ -55,7 +62,7 @@
 	"bugs": {
 		"url": "https://github.com/htlin222/openevidence-mcp/issues"
 	},
-	"author": "Bakhtier Sizhaev",
+	"author": "Hsiehting Lin",
 	"license": "Apache-2.0",
 	"type": "module",
 	"dependencies": {

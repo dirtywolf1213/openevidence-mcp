@@ -400,10 +400,10 @@ export class DataDomeChallengeError extends HttpError {
   constructor(target: string, headers?: HeaderLike) {
     super(
       [
-        `DataDome bot-protection challenge on ${target} (HTTP 403).`,
-        `Your OpenEvidence login session is still valid — the anti-bot layer flagged`,
-        `this request as automated. Re-authenticate in a real browser, solve the`,
-        `challenge, then refresh cookies.json. Automated bypass is not supported.`,
+        `OpenEvidence returned a 403 challenge on ${target}.`,
+        `Your login session is still valid, but this Node request was not accepted.`,
+        `Use the browser-extension relay (which issues requests from your own`,
+        `logged-in tab), or re-establish a fresh browser session and refresh cookies.json.`,
       ].join(" "),
       403,
       undefined,

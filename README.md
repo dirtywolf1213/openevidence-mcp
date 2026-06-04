@@ -34,7 +34,7 @@ Tools:
 | `oe_auth_status`              | Check `/api/auth/me` with your cookie file                                                                                  |
 | `oe_history_list`             | Read OpenEvidence history                                                                                                   |
 | `oe_article_get`              | Fetch an article by id and save artifacts                                                                                   |
-| `oe_ask`                      | Ask a question, optionally wait, and save artifacts                                                                         |
+| `oe_ask`                      | Ask a question (requires the browser-extension relay), optionally wait, and save artifacts                                  |
 | `oe_collections_list`         | List your collections                                                                                                       |
 | `oe_collections_get`          | Get a collection (incl. nested questions[] = membership list)                                                               |
 | `oe_collections_create`       | Create a collection (agent-managed names should start with `#`)                                                             |
@@ -264,7 +264,7 @@ It flags the common ways the `datadome` cookie goes stale:
 - **`fingerprint-default` (WARN)** — no `openevidence-fingerprint.json`; the built-in macOS/arm signature is in use.
 - **`datadome-live` (FAIL)** — a live request was actually challenged (definitive staleness). Exit code is non-zero when any check fails, so it works in CI/pre-flight.
 
-### Browser extension relay (recommended — invisible, no 403)
+### Browser extension relay (required for `oe_ask` — invisible, no 403)
 
 A small companion **Brave/Chrome extension** removes the DataDome problem entirely: the MCP server submits the ask `POST` **inside your real logged-in tab** (genuine origin/cookies/TLS), with **no visible navigation**. It's a generic authenticated fetch proxy — all logic stays in Node; the extension just lends its browser session over a localhost relay.
 
@@ -419,7 +419,6 @@ Then restart or open a fresh MCP client session if the old stdio server process 
 | `OE_MCP_POLL_TIMEOUT_MS`   | `180000`                                                                  | Default poll timeout                              |
 | `OE_MCP_DB_PATH`           | `~/.openevidence-mcp/db/oe.sqlite`                                        | Local SQLite mirror used by the collections tools |
 | `OE_MCP_PYTHON`            | `python3`                                                                 | Python interpreter the bridge tools spawn         |
-| `OE_MCP_BROWSER_APP`       | system default browser                                                    | macOS app for `via_browser` asks (e.g. `Safari`)  |
 | `OE_MCP_LEGACY_ACCOUNT`    | `legacy`                                                                  | Label for pre-v2 rows on DB account migration     |
 
 ## Project Files
@@ -430,6 +429,9 @@ Then restart or open a fresh MCP client session if the old stdio server process 
 - [src/citations.ts](src/citations.ts) - citation extraction, BibTeX, Crossref validation
 - [src/cookies.ts](src/cookies.ts) - cookie file parsing
 - [src/server.ts](src/server.ts) - MCP tools
+- [src/relay-server.ts](src/relay-server.ts) - localhost relay the browser extension connects to
+- [src/doctor.ts](src/doctor.ts) - stale DataDome cookie diagnostics
+- [extension/README.md](extension/README.md) - browser-extension relay (required for `oe_ask`)
 - [test/citations.test.ts](test/citations.test.ts) - unit tests
 
 ## License And Attribution

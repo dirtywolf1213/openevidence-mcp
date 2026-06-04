@@ -1,0 +1,17 @@
+# Never ship local caches, secrets, or session artifacts in the npm tarball.
+__pycache__/
+*.pyc
+*.har
+cookies.json
+cookies.*.json
+*.pem
+openevidence-fingerprint*.json
+storage-state.json
+*.skill
+.env
+.env.*
+
+# Dev-only integration/probe scripts (kept out of the published package).
+scripts/*-e2e.mjs
+scripts/*-probe.mjs
+scripts/_*.mjs

@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "OpenEvidence MCP Relay",
   "version": "0.1.0",
-  "description": "Runs OpenEvidence ask POSTs inside your real logged-in tab so the local MCP server never hits DataDome. Localhost-only.",
+  "description": "Runs OpenEvidence requests inside your own logged-in tab so they carry your genuine browser session. Companion for the local openevidence-mcp server; localhost-only.",
   "permissions": ["scripting", "tabs", "storage", "alarms"],
   "host_permissions": [
     "https://www.openevidence.com/*",

@@ -13,7 +13,7 @@ Thank you for considering contributing to OpenEvidence MCP.
 ## Development Setup
 
 ```bash
-git clone https://github.com/bakhtiersizhaev/openevidence-mcp.git
+git clone https://github.com/htlin222/openevidence-mcp.git
 cd openevidence-mcp
 npm install
 cp .env.example .env

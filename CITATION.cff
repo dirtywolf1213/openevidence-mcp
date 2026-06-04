@@ -1,10 +1,17 @@
 cff-version: 1.2.0
-title: OpenEvidence MCP
-message: "If you use or fork this project, please keep attribution to the original author and repository."
+title: OpenEvidence MCP (Cookie Auth Fork)
+message: "If you use or fork this project, please keep attribution to this fork and to the original upstream author."
 type: software
 authors:
-  - family-names: Sizhaev
-    given-names: Bakhtier
-repository-code: "https://github.com/bakhtiersizhaev/openevidence-mcp"
-url: "https://github.com/bakhtiersizhaev/openevidence-mcp"
+  - family-names: Lin
+    given-names: Hsiehting
+repository-code: "https://github.com/htlin222/openevidence-mcp"
+url: "https://github.com/htlin222/openevidence-mcp"
 license: Apache-2.0
+references:
+  - type: software
+    title: OpenEvidence MCP (upstream)
+    authors:
+      - family-names: Sizhaev
+        given-names: Bakhtier
+    repository-code: "https://github.com/bakhtiersizhaev/openevidence-mcp"
