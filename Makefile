@@ -15,8 +15,10 @@ else
 FINGERPRINT_HAR ?= $(CURDIR)/www.openevidence.com.har
 endif
 SERVER := $(CURDIR)/dist/server.js
+VERSION := $(shell $(NODE) -p "require('$(CURDIR)/package.json').version")
+EXT_VERSION := $(shell $(NODE) -p "require('$(CURDIR)/extension/package.json').version")
 
-.PHONY: deps build extension check test smoke fingerprint import-cookies update-dotflows update-dotflows-from-har sync-mine sync-mine-from-har install-claude-global install-codex-global install-agy-global install-all remove-claude-global remove-codex-global remove-agy-global reinstall-claude-global reinstall-codex-global reinstall-agy-global clean
+.PHONY: deps build extension check test smoke fingerprint import-cookies update-dotflows update-dotflows-from-har sync-mine sync-mine-from-har install-claude-global install-codex-global install-agy-global install-all remove-claude-global remove-codex-global remove-agy-global reinstall-claude-global reinstall-codex-global reinstall-agy-global release publish release-extension clean
 
 deps:
 	$(NPM) install
@@ -87,6 +89,20 @@ reinstall-claude-global: install-claude-global
 reinstall-codex-global: install-codex-global
 
 reinstall-agy-global: install-agy-global
+
+release: build check test
+	@echo "==> release v$(VERSION)"
+	git tag -a "v$(VERSION)" -m "Release v$(VERSION)"
+	git push origin "v$(VERSION)"
+	gh release create "v$(VERSION)" --title "v$(VERSION)" --generate-notes
+
+publish: build check test
+	$(NPM) publish
+
+release-extension: extension
+	@echo "==> tag extension-v$(EXT_VERSION) (CI builds + signs + attaches zip/crx)"
+	git tag -a "extension-v$(EXT_VERSION)" -m "extension-v$(EXT_VERSION)"
+	git push origin "extension-v$(EXT_VERSION)"
 
 clean:
 	rm -rf dist

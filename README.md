@@ -129,6 +129,8 @@ npm run login
 npm run smoke
 ```
 
+> ⚠️ **Asking requires the browser extension.** `npm run smoke` validates auth + reads only (those work over cookies). `oe_ask` submits the request through a small Brave/Chrome relay extension that runs it inside your own logged-in tab — set it up **before asking**: see the **Browser extension relay** section below and [`extension/README.md`](extension/README.md). Reads (`oe_history_list`, `oe_article_get`, collections) work without it.
+
 `make build` extracts `openevidence-fingerprint.json` from the HAR when the HAR exists, then compiles `dist/server.js`. The cookie file can be a browser-exported cookies array or a storage-state object with a `cookies` array.
 
 The fingerprint is **profile-faithful**: the client sends exactly the captured browser's header set — no backfill from a built-in default. So a HAR from any browser works, and the headers stay coherent with the cookie that browser minted. A **Safari** HAR, for example, correctly sends Safari's `User-Agent` and `Sec-Fetch-*` and **omits** the Chromium-only `sec-ch-ua*` client hints (which Safari does not send); a Chrome/Brave HAR includes them. Match the fingerprint browser to the browser that exported `cookies.json` for the most coherent request. (The `make build` step still warns when a HAR lacks `sec-ch-ua*` — that warning is expected and harmless for Safari.)
