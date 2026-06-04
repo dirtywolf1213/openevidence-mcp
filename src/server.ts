@@ -8,12 +8,10 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 
-import { askViaBrowser, detectMacDefaultBrowserApp } from "./ask-browser.js";
 import { startRelayServer, type RelayServer } from "./relay-server.js";
 import { extractFigures, saveArticleArtifacts } from "./citations.js";
 import { ensureConfigDirs, resolveConfig } from "./config.js";
 import {
-	DataDomeChallengeError,
 	buildAskBody,
 	extractAnswerText,
 	OpenEvidenceClient,
@@ -132,14 +130,11 @@ server.registerTool(
 		title: "OpenEvidence Ask",
 		description:
 			"Create a question and optionally wait for completion. For follow-up question pass original_article_id. " +
-			"If the Node POST is DataDome-blocked it automatically falls back to your real logged-in browser (disable via OE_MCP_BROWSER_FALLBACK=0); set via_browser=true to force the browser path; " +
-			"the id is then recovered by diffing history.",
+			"Submits POST /api/article through the connected browser-extension relay (runs in your real logged-in tab, DataDome-free); the direct Node POST is deprecated and no longer attempted. " +
+			"Requires the relay extension to be connected (see extension/README.md).",
 		inputSchema: z.object({
 			question: z.string().min(3).max(6000),
 			original_article_id: z.string().uuid().optional(),
-			via_browser: z.boolean().default(false).optional(),
-			via_browser_background: z.boolean().default(true).optional(),
-			via_browser_app: z.string().optional(),
 			wait_for_completion: z.boolean().default(true).optional(),
 			timeout_sec: z.number().int().min(5).max(600).default(120).optional(),
 			poll_interval_ms: z
@@ -165,135 +160,73 @@ server.registerTool(
 		withClient(async (client) => {
 			const timeoutMs = (args.timeout_sec ?? 120) * 1000;
 			const intervalMs = args.poll_interval_ms ?? config.pollIntervalMs;
-			let articleId = "";
-			let article: Record<string, unknown> = {};
-			let note: string | undefined;
 			
-			// Browser-driven: the real browser does the (DataDome-fronted) POST;
-			// we recover the new article id by diffing history (a read, not blocked).
-			const runViaBrowser = async (reason?: string): Promise<void> => {
-				if (args.original_article_id) {
-					note = `${reason ? `${reason} ` : ""}via_browser does not support follow-ups yet; ran as a fresh question.`;
-				} else if (reason) {
-					note = reason;
-				}
-				const result = await askViaBrowser(client, config.baseUrl, {
-					question: args.question,
-					configName: args.variant_configuration_file ?? "prod",
-					background: args.via_browser_background ?? true,
-					browserApp:
-						args.via_browser_app ??
-						process.env.OE_MCP_BROWSER_APP ??
-						detectMacDefaultBrowserApp(),
-					timeoutMs,
-					pollIntervalMs: intervalMs,
-					onProgress: (message) =>
-						process.stderr.write(`[oe_ask via_browser] ${message}\n`),
-				});
-				articleId = result.articleId;
-				article = result.article;
+			// The ask write goes exclusively through the browser-extension relay: it runs
+			// POST /api/article inside your real logged-in tab (DataDome-free). The legacy
+			// Node POST is deprecated and no longer attempted.
+			const relay = await getRelay();
+			if (!relay || !relay.isConnected()) {
+				return fail(
+					"OpenEvidence ask requires the browser relay extension to be connected. " +
+						"Install/enable it (see extension/README.md), keep the browser logged in " +
+						"to openevidence.com, then retry. The direct Node POST is deprecated " +
+						"(DataDome-blocked).",
+				);
+			}
+			
+			const askPayload: OpenEvidenceAskRequest = {
+				question: args.question,
+				originalArticleId: args.original_article_id,
+				disableCaching: args.disable_caching ?? false,
+				personalizationEnabled: args.personalization_enabled ?? false,
+				articleType: args.article_type,
+				variantConfigurationFile: args.variant_configuration_file,
 			};
 			
-			if (args.via_browser) {
-				await runViaBrowser();
-			} else {
-				const askPayload: OpenEvidenceAskRequest = {
-					question: args.question,
-					originalArticleId: args.original_article_id,
-					disableCaching: args.disable_caching ?? false,
-					personalizationEnabled: args.personalization_enabled ?? false,
-					articleType: args.article_type,
-					variantConfigurationFile: args.variant_configuration_file,
-				};
-			
-				try {
-					const created = await client.ask(askPayload);
-					articleId = String(created.id ?? "");
-					if (!articleId) {
-						return fail("OpenEvidence returned no article id.");
-					}
-			
-					const waitForCompletion = args.wait_for_completion ?? true;
-					if (!waitForCompletion) {
-						return ok({
-							created,
-							article_id: articleId,
-							note: "Article created. Poll with oe_article_get.",
-						});
-					}
-			
-					article = await client.waitForArticle(articleId, {
-						timeoutMs,
-						intervalMs,
-					});
-				} catch (error) {
-					// The ask submission (POST /api/article) is the one path DataDome
-					// blocks from Node. Re-issue it through the real logged-in browser,
-					// whose TLS fingerprint is unfakeable, instead of failing.
-					if (!(error instanceof DataDomeChallengeError)) {
-						throw error;
-					}
-					const relay = await getRelay();
-					if (relay && relay.isConnected()) {
-						process.stderr.write(
-							`[oe_ask] Node POST DataDome-blocked; routing via the Brave extension relay.\n`,
-						);
-						const resp = await relay.request(
-							{
-								method: "POST",
-								path: "/api/article",
-								body: JSON.stringify(buildAskBody(askPayload)),
-							},
-							{ timeoutMs },
-						);
-						if (resp.status < 200 || resp.status >= 300) {
-							throw new Error(
-								`relay POST /api/article -> ${resp.status} ${resp.body.slice(0, 200)}`,
-							);
-						}
-						const created = JSON.parse(resp.body) as { id?: string };
-						articleId = String(created.id ?? "");
-						if (!articleId) {
-							throw new Error("relay POST returned no article id");
-						}
-						note =
-							"Node POST was DataDome-blocked; submitted via the Brave extension relay.";
-						article = await client.waitForArticle(articleId, { timeoutMs, intervalMs });
-					} else if (config.browserFallback) {
-						process.stderr.write(
-							`[oe_ask] Node POST DataDome-blocked; falling back to browser. ${error.message}\n`,
-						);
-						await runViaBrowser(
-							"Node POST was DataDome-blocked; recovered via your real logged-in browser.",
-						);
-					} else {
-						throw error;
-					}
-				}
+			const resp = await relay.request(
+				{
+					method: "POST",
+					path: "/api/article",
+					body: JSON.stringify(buildAskBody(askPayload)),
+				},
+				{ timeoutMs },
+			);
+			if (resp.status < 200 || resp.status >= 300) {
+				return fail(
+					`relay POST /api/article -> ${resp.status} ${resp.body.slice(0, 200)}`,
+				);
 			}
-
+			const created = JSON.parse(resp.body) as { id?: string };
+			const articleId = String(created.id ?? "");
+			if (!articleId) {
+				return fail("relay POST returned no article id.");
+			}
+			
+			const waitForCompletion = args.wait_for_completion ?? true;
+			if (!waitForCompletion) {
+				return ok({
+					created,
+					article_id: articleId,
+					note: "Article created via the extension relay. Poll with oe_article_get.",
+				});
+			}
+			
+			const article = await client.waitForArticle(articleId, { timeoutMs, intervalMs });
 			const figures = extractFigures(article);
 			const answerRaw = extractAnswerText(article);
 			const artifacts =
 				(args.save_artifacts ?? true)
 					? await saveArticleArtifacts(article, config, {
-							validateWithCrossref:
-								args.crossref_validate ?? config.crossrefValidate,
+							validateWithCrossref: args.crossref_validate ?? config.crossrefValidate,
 						})
 					: null;
-
+			
 			return ok({
 				article_id: articleId,
 				status: String(article.status ?? ""),
-				extracted_answer_raw: answerRaw
-					? resolveVisualTags(answerRaw, figures)
-					: null,
+				extracted_answer_raw: answerRaw ? resolveVisualTags(answerRaw, figures) : null,
 				figures,
-				artifacts: formatArtifactsForResponse(
-					artifacts,
-					args.include_bibtex ?? true,
-				),
-				...(note ? { note } : {}),
+				artifacts: formatArtifactsForResponse(artifacts, args.include_bibtex ?? true),
 			});
 		}),
 );

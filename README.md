@@ -264,24 +264,6 @@ It flags the common ways the `datadome` cookie goes stale:
 - **`fingerprint-default` (WARN)** — no `openevidence-fingerprint.json`; the built-in macOS/arm signature is in use.
 - **`datadome-live` (FAIL)** — a live request was actually challenged (definitive staleness). Exit code is non-zero when any check fails, so it works in CI/pre-flight.
 
-### Browser-driven ask (`via_browser`)
-
-When the Node `POST /api/article` is DataDome-blocked, you can submit the ask through your **real, logged-in browser** instead — the POST then originates from a genuine browser session and is not challenged. Node never makes the POST; it recovers the new article id by diffing history (`/api/article/list`, a read, not blocked) and fetches the result.
-
-```bash
-npm run ask:browser -- "how to treat AML?"              # uses the default browser, background tab
-npm run ask:browser -- "..." --foreground               # bring the tab to the front
-npm run ask:browser -- "..." --browser "Safari"          # force a specific logged-in browser
-```
-
-Via MCP: `oe_ask { question, via_browser: true }`. Flags: `via_browser_background` (default true) and `via_browser_app` (e.g. `"Safari"`); the default browser app can also be set with `OE_MCP_BROWSER_APP`.
-
-Notes:
-
-- **Same account both sides.** The browser that submits and the `cookies.json` that polls history must be the **same** OpenEvidence account, or the new article never appears in the polled history and the call times out.
-- **macOS background** uses AppleScript (no `activate`) for a known browser app, so the tab opens without stealing focus; otherwise it falls back to `open -g`. Local-desktop only (needs a GUI browser session); a no-op on headless/CI.
-- **Dedicated runner.** To keep asks out of your main browser, log a second browser (e.g. Safari) into OpenEvidence and point both `OE_MCP_BROWSER_APP` and `cookies.json` at that account. Extract Safari's cookies (incl. httpOnly) with `npm run cookies:safari`.
-
 ### Browser extension relay (recommended — invisible, no 403)
 
 A small companion **Brave/Chrome extension** removes the DataDome problem entirely: the MCP server submits the ask `POST` **inside your real logged-in tab** (genuine origin/cookies/TLS), with **no visible navigation**. It's a generic authenticated fetch proxy — all logic stays in Node; the extension just lends its browser session over a localhost relay.

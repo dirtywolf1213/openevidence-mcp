@@ -137,6 +137,12 @@ export class OpenEvidenceClient {
     )) as Record<string, unknown>;
   }
 
+  /**
+   * @deprecated Submitting the ask as a direct Node POST is DataDome-blocked
+   * unless this client is routed through the extension relay (`useRelay()` /
+   * `OE_MCP_RELAY_TRANSPORT=all`). The `oe_ask` tool no longer calls this; it
+   * sends the POST through the relay. Kept for relay-transport callers/tests.
+   */
   async ask(payload: OpenEvidenceAskRequest): Promise<Record<string, unknown>> {
     const body = buildAskBody(payload);
 

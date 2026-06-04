@@ -17,7 +17,6 @@
 		"import-cookies": "tsx src/login.ts",
 		"fingerprint": "tsx src/fingerprint.ts",
 		"doctor": "tsx src/doctor.ts",
-		"ask:browser": "tsx src/ask-browser.ts",
 		"cookies:safari": "python3 scripts/safari_cookies.py --out cookies.json",
 		"check": "tsc -p tsconfig.json --noEmit",
 		"test": "tsx --test test/*.test.ts",

@@ -14,7 +14,6 @@ function relayConfig(): AppConfig {
     crossrefValidate: false,
     pollIntervalMs: 10,
     pollTimeoutMs: 1000,
-    browserFallback: true,
     relayEnabled: true,
     relayPort: 8787,
     relayTransport: "all",
