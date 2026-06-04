@@ -14,6 +14,13 @@ export interface AppConfig {
   crossrefValidate: boolean;
   pollIntervalMs: number;
   pollTimeoutMs: number;
+  /**
+   * When the Node `POST /api/article` is DataDome-blocked (403), automatically
+   * re-run the ask through the real logged-in browser (`askViaBrowser`) instead
+   * of surfacing the challenge. On by default; set OE_MCP_BROWSER_FALLBACK=0 to
+   * fail fast (e.g. headless servers with no GUI browser).
+   */
+  browserFallback: boolean;
   rateLimit: RateLimitConfig;
 }
 
@@ -47,6 +54,7 @@ export function resolveConfig(): AppConfig {
     crossrefValidate: process.env.OE_MCP_CROSSREF_VALIDATE !== "0",
     pollIntervalMs: parseInt(process.env.OE_MCP_POLL_INTERVAL_MS ?? "1200", 10),
     pollTimeoutMs: parseInt(process.env.OE_MCP_POLL_TIMEOUT_MS ?? "180000", 10),
+    browserFallback: process.env.OE_MCP_BROWSER_FALLBACK !== "0",
     rateLimit: resolveRateLimitConfig(),
   };
 }

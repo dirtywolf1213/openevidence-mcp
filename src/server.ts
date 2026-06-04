@@ -12,6 +12,7 @@ import { askViaBrowser, detectMacDefaultBrowserApp } from "./ask-browser.js";
 import { extractFigures, saveArticleArtifacts } from "./citations.js";
 import { ensureConfigDirs, resolveConfig } from "./config.js";
 import {
+	DataDomeChallengeError,
 	extractAnswerText,
 	OpenEvidenceClient,
 	resolveVisualTags,
@@ -111,8 +112,8 @@ server.registerTool(
 		title: "OpenEvidence Ask",
 		description:
 			"Create a question and optionally wait for completion. For follow-up question pass original_article_id. " +
-			"Set via_browser=true to submit through your real logged-in browser (bypasses DataDome on the POST); " +
-			"the id is recovered by diffing history.",
+			"If the Node POST is DataDome-blocked it automatically falls back to your real logged-in browser (disable via OE_MCP_BROWSER_FALLBACK=0); set via_browser=true to force the browser path; " +
+			"the id is then recovered by diffing history.",
 		inputSchema: z.object({
 			question: z.string().min(3).max(6000),
 			original_article_id: z.string().uuid().optional(),
@@ -144,16 +145,17 @@ server.registerTool(
 		withClient(async (client) => {
 			const timeoutMs = (args.timeout_sec ?? 120) * 1000;
 			const intervalMs = args.poll_interval_ms ?? config.pollIntervalMs;
-			let articleId: string;
-			let article: Record<string, unknown>;
+			let articleId = "";
+			let article: Record<string, unknown> = {};
 			let note: string | undefined;
-
-			if (args.via_browser) {
-				// Browser-driven: the real browser does the (DataDome-fronted) POST;
-				// we recover the new article id by diffing history (a read, not blocked).
+			
+			// Browser-driven: the real browser does the (DataDome-fronted) POST;
+			// we recover the new article id by diffing history (a read, not blocked).
+			const runViaBrowser = async (reason?: string): Promise<void> => {
 				if (args.original_article_id) {
-					note =
-						"via_browser does not support follow-ups yet; ran as a fresh question.";
+					note = `${reason ? `${reason} ` : ""}via_browser does not support follow-ups yet; ran as a fresh question.`;
+				} else if (reason) {
+					note = reason;
 				}
 				const result = await askViaBrowser(client, config.baseUrl, {
 					question: args.question,
@@ -170,6 +172,10 @@ server.registerTool(
 				});
 				articleId = result.articleId;
 				article = result.article;
+			};
+			
+			if (args.via_browser) {
+				await runViaBrowser();
 			} else {
 				const askPayload: OpenEvidenceAskRequest = {
 					question: args.question,
@@ -179,26 +185,42 @@ server.registerTool(
 					articleType: args.article_type,
 					variantConfigurationFile: args.variant_configuration_file,
 				};
-
-				const created = await client.ask(askPayload);
-				articleId = String(created.id ?? "");
-				if (!articleId) {
-					return fail("OpenEvidence returned no article id.");
-				}
-
-				const waitForCompletion = args.wait_for_completion ?? true;
-				if (!waitForCompletion) {
-					return ok({
-						created,
-						article_id: articleId,
-						note: "Article created. Poll with oe_article_get.",
+			
+				try {
+					const created = await client.ask(askPayload);
+					articleId = String(created.id ?? "");
+					if (!articleId) {
+						return fail("OpenEvidence returned no article id.");
+					}
+			
+					const waitForCompletion = args.wait_for_completion ?? true;
+					if (!waitForCompletion) {
+						return ok({
+							created,
+							article_id: articleId,
+							note: "Article created. Poll with oe_article_get.",
+						});
+					}
+			
+					article = await client.waitForArticle(articleId, {
+						timeoutMs,
+						intervalMs,
 					});
+				} catch (error) {
+					// The ask submission (POST /api/article) is the one path DataDome
+					// blocks from Node. Re-issue it through the real logged-in browser,
+					// whose TLS fingerprint is unfakeable, instead of failing.
+					if (error instanceof DataDomeChallengeError && config.browserFallback) {
+						process.stderr.write(
+							`[oe_ask] Node POST DataDome-blocked; falling back to browser. ${error.message}\n`,
+						);
+						await runViaBrowser(
+							"Node POST was DataDome-blocked; recovered via your real logged-in browser.",
+						);
+					} else {
+						throw error;
+					}
 				}
-
-				article = await client.waitForArticle(articleId, {
-					timeoutMs,
-					intervalMs,
-				});
 			}
 
 			const figures = extractFigures(article);

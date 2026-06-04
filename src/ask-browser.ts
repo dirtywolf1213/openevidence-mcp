@@ -195,11 +195,29 @@ export function defaultOpenUrl(
   const [cmd, args] = openCommand(osPlatform(), url, options);
   return new Promise<void>((resolve, reject) => {
     execFile(cmd, args, (error) => {
-      if (error) {
-        reject(new Error(`Failed to open browser via \`${cmd}\`: ${error.message}`));
+      if (!error) {
+        resolve();
         return;
       }
-      resolve();
+      // AppleScript tab creation can raise an AppleEvent timeout (-1712) on a
+      // busy browser even though the tab does open. Rather than fail the whole
+      // ask, degrade to the simple, reliable `open -g <url>` (default browser).
+      if (cmd === "osascript" && osPlatform() === "darwin") {
+        execFile("open", ["-g", url], (fallbackError) => {
+          if (fallbackError) {
+            reject(
+              new Error(
+                `Failed to open browser: osascript errored (${error.message}) and ` +
+                  `\`open -g\` fallback also failed (${fallbackError.message}).`,
+              ),
+            );
+            return;
+          }
+          resolve();
+        });
+        return;
+      }
+      reject(new Error(`Failed to open browser via \`${cmd}\`: ${error.message}`));
     });
   });
 }
