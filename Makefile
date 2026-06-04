@@ -5,6 +5,8 @@ CLAUDE ?= claude
 CODEX ?= codex
 AGY ?= agy-cli
 MCP_NAME ?= openevidence
+RELAY_PORT ?= 8787
+RELAY_PID ?= $(HOME)/.openevidence-mcp/relay.pid
 COOKIES ?= $(CURDIR)/cookies.json
 HAR ?= $(CURDIR)/www.openevidence.com_dotflow.har
 HAR_MINE ?= $(CURDIR)/www.openevidence.com_dotflow_mine.har
@@ -18,7 +20,7 @@ SERVER := $(CURDIR)/dist/server.js
 VERSION := $(shell $(NODE) -p "require('$(CURDIR)/package.json').version")
 EXT_VERSION := $(shell $(NODE) -p "require('$(CURDIR)/extension/package.json').version")
 
-.PHONY: all deps build extension check test smoke fingerprint import-cookies update-dotflows update-dotflows-from-har sync-mine sync-mine-from-har install-claude-global install-codex-global install-agy-global install-all remove-claude-global remove-codex-global remove-agy-global reinstall-claude-global reinstall-codex-global reinstall-agy-global release publish release-extension clean
+.PHONY: all deps build extension check test smoke fingerprint import-cookies update-dotflows update-dotflows-from-har sync-mine sync-mine-from-har install-claude-global install-codex-global install-agy-global install-all remove-claude-global remove-codex-global remove-agy-global reinstall-claude-global reinstall-codex-global reinstall-agy-global release publish release-extension kill-all clean
 
 # One command does the whole setup: install deps, build the MCP server
 # (dist/server.js) + the relay extension (extension/dist), and register the
@@ -134,6 +136,14 @@ release-extension: extension
 	@echo "==> tag extension-v$(EXT_VERSION) (CI builds + signs + attaches zip/crx)"
 	git tag -a "extension-v$(EXT_VERSION)" -m "extension-v$(EXT_VERSION)"
 	git push origin "extension-v$(EXT_VERSION)"
+
+kill-all:
+	@echo "==> stopping OpenEvidence MCP servers + relay daemon"
+	@if pkill -f "$(CURDIR)/dist/server.js" 2>/dev/null; then echo "  killed MCP server(s)"; else echo "  no MCP server running"; fi
+	@if pkill -f "$(CURDIR)/dist/relay-daemon.js" 2>/dev/null; then echo "  killed relay daemon"; else echo "  no relay daemon running"; fi
+	@pid=$$(lsof -ti tcp:$(RELAY_PORT) 2>/dev/null); if [ -n "$$pid" ]; then kill $$pid 2>/dev/null && echo "  freed port $(RELAY_PORT) (pid $$pid)"; fi
+	@rm -f "$(RELAY_PID)" 2>/dev/null || true
+	@echo "  done. (reconnect /mcp in any open client session to respawn a fresh server)"
 
 clean:
 	rm -rf dist
