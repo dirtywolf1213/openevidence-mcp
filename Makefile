@@ -20,10 +20,27 @@ EXT_VERSION := $(shell $(NODE) -p "require('$(CURDIR)/extension/package.json').v
 
 .PHONY: all deps build extension check test smoke fingerprint import-cookies update-dotflows update-dotflows-from-har sync-mine sync-mine-from-har install-claude-global install-codex-global install-agy-global install-all remove-claude-global remove-codex-global remove-agy-global reinstall-claude-global reinstall-codex-global reinstall-agy-global release publish release-extension clean
 
-# Build everything: the MCP server (dist/server.js) and the relay extension
-# (extension/dist). This is the default goal, so bare `make` builds both.
-all: build extension
+# One command does the whole setup: install deps, build the MCP server
+# (dist/server.js) + the relay extension (extension/dist), and register the
+# server into Claude and Codex (whichever CLI is installed). Default goal, so a
+# bare `make` is the full install. The ONLY manual step left is loading the
+# browser extension (a chrome:// GUI action that can't be scripted) — printed
+# at the end.
+all: node_modules build extension install-claude-global install-codex-global
+	@printf '\n\033[32m✅  Built and registered into your AI CLIs.\033[0m\n'
+	@printf '\033[1m👉  Last step (one time): load the browser extension\033[0m\n'
+	@printf '      1. open  chrome://extensions  (Chrome / Edge / Brave / Arc …)\n'
+	@printf '      2. turn on  Developer mode  (top-right)\n'
+	@printf '      3. Load unpacked  →  %s\n' "$(CURDIR)/extension/dist"
+	@printf '      4. stay logged in to openevidence.com in that browser\n'
+	@printf '   verify:  curl -s http://127.0.0.1:8787/health   (expect connected:true)\n\n'
 
+# Install npm deps only when package.json changes — keeps repeat `make` fast.
+node_modules: package.json
+	$(NPM) install
+	@touch node_modules
+
+# Force a fresh dependency install.
 deps:
 	$(NPM) install
 
@@ -66,12 +83,22 @@ sync-mine-from-har:
 	$(PYTHON) $(CURDIR)/scripts/dotflow_mine.py sync --har "$(HAR_MINE)"
 
 install-claude-global: build
-	$(CLAUDE) mcp remove --scope user $(MCP_NAME) >/dev/null 2>&1 || true
-	$(CLAUDE) mcp add-json --scope user $(MCP_NAME) "$$(node -e 'const [command, server, cookies] = process.argv.slice(1); process.stdout.write(JSON.stringify({ type: "stdio", command, args: [server], env: { OE_MCP_COOKIES_PATH: cookies } }));' "$(NODE)" "$(SERVER)" "$(COOKIES)")"
+	@if command -v $(CLAUDE) >/dev/null 2>&1; then \
+		$(CLAUDE) mcp remove --scope user $(MCP_NAME) >/dev/null 2>&1 || true; \
+		$(CLAUDE) mcp add-json --scope user $(MCP_NAME) "$$(node -e 'const [command, server, cookies] = process.argv.slice(1); process.stdout.write(JSON.stringify({ type: "stdio", command, args: [server], env: { OE_MCP_COOKIES_PATH: cookies } }));' "$(NODE)" "$(SERVER)" "$(COOKIES)")"; \
+		echo "[ok] registered '$(MCP_NAME)' with Claude (user scope)"; \
+	else \
+		echo "[skip] '$(CLAUDE)' CLI not found — skipping Claude registration"; \
+	fi
 
 install-codex-global: build
-	$(CODEX) mcp remove $(MCP_NAME) >/dev/null 2>&1 || true
-	$(CODEX) mcp add $(MCP_NAME) --env OE_MCP_COOKIES_PATH="$(COOKIES)" -- $(NODE) "$(SERVER)"
+	@if command -v $(CODEX) >/dev/null 2>&1; then \
+		$(CODEX) mcp remove $(MCP_NAME) >/dev/null 2>&1 || true; \
+		$(CODEX) mcp add $(MCP_NAME) --env OE_MCP_COOKIES_PATH="$(COOKIES)" -- $(NODE) "$(SERVER)"; \
+		echo "[ok] registered '$(MCP_NAME)' with Codex"; \
+	else \
+		echo "[skip] '$(CODEX)' CLI not found — skipping Codex registration"; \
+	fi
 
 install-agy-global: build
 	$(AGY) mcp remove --scope user $(MCP_NAME) >/dev/null 2>&1 || true

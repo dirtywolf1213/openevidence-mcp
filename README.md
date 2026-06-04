@@ -100,6 +100,31 @@ Saved artifacts:
 
 ## Fast Install
 
+### Quickest path — extension only (recommended)
+
+No cookies, no HAR. The browser extension *is* the login — one command builds and registers everything:
+
+```bash
+git clone https://github.com/htlin222/openevidence-mcp.git
+cd openevidence-mcp
+make all      # installs deps · builds the MCP server + relay extension ·
+              # registers the server into Claude and Codex (whichever CLI you have)
+```
+
+Then the one manual step `make all` prints (a browser action that can't be scripted): **load the extension** — open `chrome://extensions` (Chrome / Edge / Brave / Arc …) → turn on **Developer mode** → **Load unpacked** → select `extension/dist`, and stay logged in to **openevidence.com** in that browser.
+
+Verify and go:
+
+```bash
+curl -s http://127.0.0.1:8787/health     # expect "connected":true
+```
+
+That's it — ask from any number of Claude/Codex sessions at once (they share the one tab via the relay daemon). Re-run `make all` anytime to rebuild + re-register.
+
+> `cookies.json` and a HAR are **optional** — needed only for the legacy `OE_MCP_RELAY_TRANSPORT=off` cookie read path, the Python collections tooling, and `npm run doctor` / `login` / `smoke`. If you only want to ask questions, skip the rest of this section.
+
+### Cookie-path setup (optional)
+
 You need two private browser exports from the same logged-in OpenEvidence browser session:
 
 | File                       | Purpose                                                | Where to put it                        |
@@ -396,7 +421,8 @@ Then restart or open a fresh MCP client session if the old stdio server process 
 
 | Target                                              | Purpose                                                               |
 | --------------------------------------------------- | --------------------------------------------------------------------- |
-| `make deps`                                         | Run `npm install`                                                     |
+| `make all` (or bare `make`)                         | **One-shot setup:** deps + build server + build extension + register into Claude & Codex (skips a CLI that isn't installed) |
+| `make deps`                                         | Force a fresh `npm install`                                           |
 | `make build HAR=/path/to/file.har`                  | Extract fingerprint if the HAR exists, then compile TypeScript        |
 | `make check`                                        | Type-check                                                            |
 | `make test`                                         | Run unit tests                                                        |
