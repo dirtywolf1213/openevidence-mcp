@@ -20,7 +20,7 @@ SERVER := $(CURDIR)/dist/server.js
 VERSION := $(shell $(NODE) -p "require('$(CURDIR)/package.json').version")
 EXT_VERSION := $(shell $(NODE) -p "require('$(CURDIR)/extension/package.json').version")
 
-.PHONY: all help deps build extension check test smoke fingerprint import-cookies update-dotflows update-dotflows-from-har sync-mine sync-mine-from-har install-claude-global install-codex-global install-agy-global install-all remove-claude-global remove-codex-global remove-agy-global reinstall-claude-global reinstall-codex-global reinstall-agy-global release publish release-extension kill-all clean
+.PHONY: all help deps build extension rebuild reinstall check test smoke fingerprint import-cookies update-dotflows update-dotflows-from-har sync-mine sync-mine-from-har install-claude-global install-codex-global install-agy-global install-all remove-claude-global remove-codex-global remove-agy-global reinstall-claude-global reinstall-codex-global reinstall-agy-global release publish release-extension kill-all clean
 
 # One command does the whole setup: install deps, build the MCP server
 # (dist/server.js) + the relay extension (extension/dist), and register the
@@ -44,8 +44,10 @@ help:
 	@printf '                      then load the extension (chrome://extensions -> Load unpacked -> extension/dist)\n'
 	@printf '  make kill-all       stop all MCP servers + the relay daemon (free port %s)\n' "$(RELAY_PORT)"
 	@printf '\n\033[1mBuild & verify:\033[0m\n'
-	@printf '  make build [HAR=…]  compile dist/server.js (extracts fingerprint from HAR if given)\n'
-	@printf '  make extension      build the browser relay extension (extension/dist)\n'
+	@printf '  make build [HAR=…]  compile dist/server.js (wipes dist/ first; extracts fingerprint from HAR if given)\n'
+	@printf '  make extension      build the browser relay extension (wipes extension/dist/ first)\n'
+	@printf '  make rebuild        kill all running servers/daemons, then build fresh\n'
+	@printf '  make reinstall      kill all, build fresh, then re-register into Claude & Codex\n'
 	@printf '  make deps           force a fresh npm install\n'
 	@printf '  make check / test / smoke    type-check / unit tests / auth+history smoke (cookie path)\n'
 	@printf '\n\033[1mRegister / unregister an AI CLI (HAR optional):\033[0m\n'
@@ -83,6 +85,18 @@ build:
 extension:
 	rm -rf "$(CURDIR)/extension/dist"
 	cd $(CURDIR)/extension && $(NPM) install && $(NPM) run build
+
+# Stop every running server/daemon, then build the server fresh from a clean
+# dist/. The everyday "I changed source, give me a clean running build" cycle.
+rebuild:
+	$(MAKE) kill-all
+	$(MAKE) build
+
+# Same as rebuild, then re-register the fresh server into Claude + Codex.
+# Use after changing how the server is launched/registered, not just its code.
+reinstall:
+	$(MAKE) kill-all
+	$(MAKE) install-claude-global install-codex-global
 
 check:
 	$(NPM) run check
