@@ -68,7 +68,9 @@ node_modules: package.json
 deps:
 	$(NPM) install
 
+# Always start from a clean dist/ so stale artifacts can never survive a rebuild.
 build:
+	rm -rf "$(CURDIR)/dist"
 	@if [ -f "$(FINGERPRINT_HAR)" ]; then \
 		$(NPM) run fingerprint -- --har "$(FINGERPRINT_HAR)" --out "$(FINGERPRINT)"; \
 	else \
@@ -76,7 +78,10 @@ build:
 	fi
 	$(NPM) run build
 
+# Wipe extension/dist/ first — build.mjs only mkdir's, so a stale .crx or
+# renamed file would otherwise linger across rebuilds.
 extension:
+	rm -rf "$(CURDIR)/extension/dist"
 	cd $(CURDIR)/extension && $(NPM) install && $(NPM) run build
 
 check:
@@ -168,4 +173,4 @@ kill-all:
 	@echo "  done. (reconnect /mcp in any open client session to respawn a fresh server)"
 
 clean:
-	rm -rf dist
+	rm -rf "$(CURDIR)/dist" "$(CURDIR)/extension/dist"
