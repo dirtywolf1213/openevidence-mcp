@@ -102,7 +102,9 @@ MCP-side checks:
 
 `oe_ask` is **fire-and-forget by default**: it returns `{ article_id, status: "pending" }` immediately. Fetch the finished answer with `oe_article_get(article_id)` — it supports `wait_for_completion` / `timeout_sec` / `poll_interval_ms` and reports `status`. For a one-shot blocking call, pass `oe_ask(wait_for_completion: true)`.
 
-`oe_ask` and `oe_article_get` include `artifacts.bibtex` in their MCP response by default when artifacts are saved. Use `include_bibtex: false` if the client needs a smaller response.
+`oe_ask` and `oe_article_get` include `artifacts.bibtex` in their MCP response by default when artifacts are saved. Use `include_bibtex: false` if the client needs a smaller response. Pass `strip_citation_markers: true` on either to also get `extracted_answer_clean` with `[1]`-style reference marks removed.
+
+`oe_public_get(url)` reads a conversation page (`https://www.openevidence.com/ask/<id>`) into Q&A markdown turns. *Public* (shared) conversations need **no login, relay, or extension at all**; private ones work through the connected relay tab, or `cookies.json` as a headless fallback. Use it to validate connectivity before the extension is set up, or to import conversations shared by others. `oe_article_get` and `oe_ask.original_article_id` also accept full `/ask/` URLs.
 
 ## Step 5: Optional — Cookie Handoff (legacy / Python tooling)
 

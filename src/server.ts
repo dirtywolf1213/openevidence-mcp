@@ -13,9 +13,18 @@ import { extractFigures, saveArticleArtifacts } from "./citations.js";
 import { ensureConfigDirs, resolveConfig } from "./config.js";
 import {
 	extractAnswerText,
+	fetchHtmlWithCookies,
 	OpenEvidenceClient,
 	resolveVisualTags,
 } from "./openevidence-client.js";
+import {
+	extractArticleId,
+	fetchConversationHtml,
+	parsePublicConversation,
+	PublicPageError,
+	stripCitationMarkers,
+} from "./public-page.js";
+import { RateLimitController } from "./rate-limit.js";
 import {
 	parseStdoutJson,
 	runClassify,
@@ -109,26 +118,35 @@ server.registerTool(
 	{
 		title: "OpenEvidence Article Get",
 		description:
-			"Fetch an article (answer) by id — the fetch-later half of fire-and-forget oe_ask. " +
+			"Fetch an article (answer) by id or /ask/ URL — the fetch-later half of fire-and-forget oe_ask. " +
 			"Returns the current status; if it is still 'pending' either retry later or pass wait_for_completion:true to block until the answer is ready.",
 		inputSchema: z.object({
-			article_id: z.string().uuid(),
+			article_id: z
+				.string()
+				.describe("Article UUID, or any openevidence.com/ask/<id> URL."),
 			wait_for_completion: z.boolean().default(false).optional(),
 			timeout_sec: z.number().int().min(5).max(600).default(120).optional(),
 			poll_interval_ms: z.number().int().min(300).max(10000).default(1200).optional(),
 			save_artifacts: z.boolean().default(true).optional(),
 			crossref_validate: z.boolean().default(true).optional(),
 			include_bibtex: z.boolean().default(true).optional(),
+			strip_citation_markers: z.boolean().default(false).optional(),
 		}),
 	},
 	async (args) =>
 		withClient(async (client) => {
+			const articleId = extractArticleId(args.article_id);
+			if (!articleId) {
+				return fail(
+					`Could not find an article UUID in "${args.article_id}". Pass a UUID or an openevidence.com/ask/<id> URL.`,
+				);
+			}
 			const article = (args.wait_for_completion ?? false)
-				? await client.waitForArticle(args.article_id, {
+				? await client.waitForArticle(articleId, {
 						timeoutMs: (args.timeout_sec ?? 120) * 1000,
 						intervalMs: args.poll_interval_ms ?? config.pollIntervalMs,
 					})
-				: await client.getArticle(args.article_id);
+				: await client.getArticle(articleId);
 			const figures = extractFigures(article);
 			const answerRaw = extractAnswerText(article);
 			const artifacts =
@@ -138,12 +156,14 @@ server.registerTool(
 								args.crossref_validate ?? config.crossrefValidate,
 						})
 					: null;
+			const answer = answerRaw ? resolveVisualTags(answerRaw, figures) : null;
 			return ok({
-				article_id: args.article_id,
+				article_id: articleId,
 				status: String(article.status ?? ""),
-				extracted_answer_raw: answerRaw
-					? resolveVisualTags(answerRaw, figures)
-					: null,
+				extracted_answer_raw: answer,
+				...(answer && (args.strip_citation_markers ?? false)
+					? { extracted_answer_clean: stripCitationMarkers(answer) }
+					: {}),
 				figures,
 				artifacts: formatArtifactsForResponse(
 					artifacts,
@@ -163,7 +183,12 @@ server.registerTool(
 			"Requires the relay extension to be connected (see extension/README.md).",
 		inputSchema: z.object({
 			question: z.string().min(3).max(6000),
-			original_article_id: z.string().uuid().optional(),
+			original_article_id: z
+				.string()
+				.optional()
+				.describe(
+					"Article UUID or openevidence.com/ask/<id> URL of the conversation to follow up on.",
+				),
 			wait_for_completion: z.boolean().default(false).optional(),
 			timeout_sec: z.number().int().min(5).max(600).default(120).optional(),
 			poll_interval_ms: z
@@ -183,20 +208,31 @@ server.registerTool(
 			save_artifacts: z.boolean().default(true).optional(),
 			crossref_validate: z.boolean().default(true).optional(),
 			include_bibtex: z.boolean().default(true).optional(),
+			strip_citation_markers: z.boolean().default(false).optional(),
 		}),
 	},
 	async (args) =>
 		withClient(async (client) => {
 			const timeoutMs = (args.timeout_sec ?? 120) * 1000;
 			const intervalMs = args.poll_interval_ms ?? config.pollIntervalMs;
-			
+
+			let originalArticleId: string | undefined;
+			if (args.original_article_id) {
+				originalArticleId = extractArticleId(args.original_article_id) ?? undefined;
+				if (!originalArticleId) {
+					return fail(
+						`Could not find an article UUID in original_article_id "${args.original_article_id}".`,
+					);
+				}
+			}
+
 			// The whole client is routed through the browser-extension relay (see
 			// withClient): POST /api/article runs inside your logged-in tab and the
 			// follow-up reads use that same session, so a freshly-created article is
 			// always visible to the poller (no creator/account mismatch).
 			const askPayload: OpenEvidenceAskRequest = {
 				question: args.question,
-				originalArticleId: args.original_article_id,
+				originalArticleId,
 				disableCaching: args.disable_caching ?? false,
 				personalizationEnabled: args.personalization_enabled ?? false,
 				articleType: args.article_type,
@@ -229,14 +265,89 @@ server.registerTool(
 						})
 					: null;
 			
+			const answer = answerRaw ? resolveVisualTags(answerRaw, figures) : null;
 			return ok({
 				article_id: articleId,
 				status: String(article.status ?? ""),
-				extracted_answer_raw: answerRaw ? resolveVisualTags(answerRaw, figures) : null,
+				extracted_answer_raw: answer,
+				...(answer && (args.strip_citation_markers ?? false)
+					? { extracted_answer_clean: stripCitationMarkers(answer) }
+					: {}),
 				figures,
 				artifacts: formatArtifactsForResponse(artifacts, args.include_bibtex ?? true),
 			});
 		}),
+);
+
+// Page fetches in oe_public_get bypass OpenEvidenceClient, so they get their
+// own controller against the same account budget (60 clinical queries/min) —
+// one page GET per tool call, throttled exactly like the API reads.
+const pageLimiter = new RateLimitController(config.rateLimit);
+
+server.registerTool(
+	"oe_public_get",
+	{
+		title: "OpenEvidence Conversation Page Get",
+		description:
+			"Read an OpenEvidence conversation from an /ask/<id> link and parse the page into Q&A turns (question, answer as markdown, references). " +
+			"Public (shared) conversations need no setup at all; your own private ones work when the relay extension is connected (your logged-in tab) or cookies.json exists. " +
+			"Use oe_article_get when you want the raw API payload + saved artifacts instead.",
+		inputSchema: z.object({
+			url: z
+				.string()
+				.min(8)
+				.describe("A https://www.openevidence.com/ask/<id> URL, or the bare article UUID."),
+			strip_citation_markers: z.boolean().default(false).optional(),
+		}),
+	},
+	async (args) => {
+		const articleId = extractArticleId(args.url);
+		if (!articleId) {
+			return fail(
+				`Could not find an article UUID in "${args.url}". Pass an openevidence.com/ask/<id> URL or a bare UUID.`,
+			);
+		}
+		try {
+			// Auth escalation: relay (logged-in tab; reads private conversations,
+			// DataDome-free) → anonymous fetch (public pages, zero setup) →
+			// cookies.json (headless fallback for private pages).
+			const relay = await getRelay();
+			await pageLimiter.acquire("routine");
+			let html: string;
+			try {
+				html = await fetchConversationHtml(articleId, {
+					relay,
+					cookieAuth: { fetchHtml: (path) => fetchHtmlWithCookies(config, path) },
+				});
+			} finally {
+				pageLimiter.release();
+			}
+			const conversation = parsePublicConversation(html);
+			if (conversation.turns.length === 0) {
+				return fail(
+					"No conversation turns found — the conversation may be deleted, or the fetch landed on a signed-out page. " +
+						"If it is yours, make sure the relay's openevidence.com tab is logged in (or refresh cookies.json), or fetch it with oe_article_get.",
+				);
+			}
+			const strip = args.strip_citation_markers ?? false;
+			return ok({
+				article_id: articleId,
+				source_url: `https://www.openevidence.com/ask/${articleId}`,
+				title: conversation.title,
+				turn_count: conversation.turns.length,
+				turns: conversation.turns.map((turn) => ({
+					question: turn.question,
+					answer_markdown: strip
+						? stripCitationMarkers(turn.answerMarkdown)
+						: turn.answerMarkdown,
+					references_markdown: turn.referencesMarkdown,
+				})),
+			});
+		} catch (error) {
+			if (error instanceof PublicPageError) return fail(error.message);
+			return fail(error instanceof Error ? error.message : String(error));
+		}
+	},
 );
 
 server.registerTool(

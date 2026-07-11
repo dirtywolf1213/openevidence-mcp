@@ -7,6 +7,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- **`oe_public_get` — read conversation pages by `/ask/` link.** Fetches an
+  `https://www.openevidence.com/ask/<id>` page and parses it into Q&A turns:
+  question, answer as clean markdown, references under a rebuilt
+  `### References` heading. Auth escalates automatically: relay tab when
+  connected (so **your own private conversations work**, DataDome-free) →
+  anonymous fetch (public/shared conversations are fully server-rendered and
+  need zero setup) → `cookies.json` (headless fallback for private pages).
+  Page fetches run through the same rate limiter as API reads (60 clinical
+  queries/min budget, self-throttled at 80%, burst-capped). Figure images
+  survive with their captions (carried from the `Open figure` button's
+  aria-label) and real URLs (the `/_next/image` proxy is resolved);
+  status-stepper chrome, follow-up suggestions, and reference favicons are
+  stripped; inline journal-name citation chips collapse to bare `[n]` markers
+  that match the references list. Parsing anchors (`<article>`,
+  `data-answer-end`, `ask--query-bar`) are ported from the battle-tested
+  mcq-bank importer and verified against a saved-page fixture.
+- **`strip_citation_markers` option** on `oe_ask`, `oe_article_get`, and
+  `oe_public_get` — removes `[1]`, `[1-2]`, `[2,3]`, `[1–3]` reference marks
+  (including markdown link targets like `[1](https://…)`) and the whitespace
+  before them; non-numeric brackets like `[note]` survive. API tools return the
+  cleaned text as `extracted_answer_clean` alongside the untouched raw answer.
+- **`/ask/` URLs accepted everywhere an article id is.** `oe_article_get.article_id`
+  and `oe_ask.original_article_id` now take a full conversation URL and extract
+  the UUID themselves.
 - **Shared relay daemon — many sessions, one tab.** The relay no longer runs
   in-process inside each MCP server (where only one session could bind port 8787;
   the rest silently failed with "relay not connected"). A standalone daemon

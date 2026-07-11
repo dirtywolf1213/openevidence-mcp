@@ -102,14 +102,25 @@ Use OpenEvidence to find guideline-supported anticoagulation options for cancer-
 - Fetch the answer later with **`oe_article_get(article_id)`** — pass `wait_for_completion: true` there to block until it's ready.
 - For one-shot blocking (submit and wait in a single call), pass `wait_for_completion: true` to **`oe_ask`** itself.
 
-A completed article returns the OpenEvidence payload and `status`, the `article_id`, the answer markdown as `extracted_answer_raw`, any figures, inline BibTeX as `artifacts.bibtex`, and saved citation files. Pass `include_bibtex: false` to keep the response small while still writing `citations.bib` to disk.
+A completed article returns the OpenEvidence payload and `status`, the `article_id`, the answer markdown as `extracted_answer_raw`, any figures, inline BibTeX as `artifacts.bibtex`, and saved citation files. Pass `include_bibtex: false` to keep the response small while still writing `citations.bib` to disk. Pass `strip_citation_markers: true` to also get `extracted_answer_clean` with the `[1]` / `[1-3]` reference marks removed — handy when quoting the answer into notes.
+
+### Reading conversation pages by link
+
+Someone sends you an OpenEvidence link? **`oe_public_get(url)`** fetches the server-rendered `/ask/<id>` page and parses it into Q&A turns (question, answer as markdown, references). Auth escalates automatically:
+
+1. **Relay connected** → the fetch runs inside your logged-in tab, so **your own private conversations work too** (and DataDome never sees it).
+2. **No relay, public link** → a plain anonymous fetch; conversations whose author pressed "make public" are fully server-rendered and need zero setup.
+3. **No relay, private link** → falls back to `cookies.json` when present; otherwise reports clearly that the conversation is private.
+
+Page fetches count against the same account budget as API calls, so they run through the same rate limiter (60 clinical queries/min, self-throttled at 80%). `oe_public_get` also accepts a bare article UUID, and `oe_article_get` / `oe_ask.original_article_id` accept full `/ask/` URLs too.
 
 ## Tools
 
 | Tool                          | Purpose                                                                                                                     |
 | ----------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
 | `oe_ask`                      | Ask a question — fire-and-forget by default (returns a pending `article_id`); `wait_for_completion:true` to block            |
-| `oe_article_get`              | Fetch an article by id (the fetch-later half of `oe_ask`); saves artifacts; `wait_for_completion` to block until ready       |
+| `oe_article_get`              | Fetch an article by id or `/ask/` URL (the fetch-later half of `oe_ask`); saves artifacts; `wait_for_completion` to block until ready |
+| `oe_public_get`               | Read a conversation page from an `/ask/<id>` link as Q&A markdown turns — public links need zero setup; private ones use the relay tab or `cookies.json` |
 | `oe_auth_status`              | Check `/api/auth/me` through the relay                                                                                       |
 | `oe_history_list`             | Read your OpenEvidence question history                                                                                      |
 | `oe_collections_list`         | List your collections                                                                                                       |

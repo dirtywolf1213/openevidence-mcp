@@ -405,6 +405,55 @@ function defaultRefererFor(fullUrl: URL, method: string): string {
 }
 
 /**
+ * Fetch an HTML page (e.g. /ask/<id>) over the legacy cookies.json session,
+ * with the captured fingerprint headers — the same shape as the cookie read
+ * path. Returns null when no usable cookie file exists, so callers can treat
+ * it as an optional fallback. Throws on DataDome interstitials and on a
+ * signed-out session (login redirect).
+ */
+export async function fetchHtmlWithCookies(
+  config: AppConfig,
+  path: string,
+): Promise<string | null> {
+  let jar: CookieJar;
+  try {
+    await access(config.cookiesPath, constants.R_OK);
+    jar = await CookieJar.fromFile(config.cookiesPath, config.baseUrl);
+  } catch {
+    return null;
+  }
+  const fullUrl = new URL(path, config.baseUrl);
+  const cookie = jar.headerFor(fullUrl.toString());
+  if (!cookie) return null;
+
+  const fingerprint = await loadBrowserFingerprint(config.fingerprintPath);
+  const headers = buildOpenEvidenceHeaders(
+    fullUrl,
+    { headers: { accept: "text/html,application/xhtml+xml" } },
+    cookie,
+    fingerprint,
+  );
+  const res = await fetch(fullUrl, { headers, redirect: "follow" });
+  if (res.status === 403) {
+    const snippet = await safeReadSnippet(res);
+    if (isDataDomeChallenge(res, snippet)) {
+      throw new DataDomeChallengeError(`GET ${path}`, res.headers);
+    }
+  }
+  if (!res.ok) {
+    throw new HttpError(`GET ${path} over cookies returned ${res.status}`, res.status);
+  }
+  const finalPath = res.url ? new URL(res.url).pathname : path;
+  if (/login|signin|auth/i.test(finalPath)) {
+    throw new Error(
+      "The cookies.json session is signed out (OpenEvidence redirected to login). " +
+        "Refresh it with: npm run login",
+    );
+  }
+  return res.text();
+}
+
+/**
  * Raised when OpenEvidence's DataDome anti-bot layer returns a challenge
  * interstitial (HTTP 403) instead of the requested resource.
  *
