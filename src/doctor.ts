@@ -5,7 +5,7 @@ import { execFileSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { platform as osPlatform, arch as osArch } from "node:os";
 import { stdout, stderr } from "node:process";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { ensureConfigDirs, resolveConfig, type AppConfig } from "./config.js";
 import { DataDomeChallengeError, OpenEvidenceClient } from "./openevidence-client.js";
@@ -373,6 +373,62 @@ async function runLiveProbe(config: AppConfig): Promise<DoctorCheck[]> {
 }
 
 /**
+ * The extension bakes its relay port in at build time (extension/build.mjs
+ * substitutes __RELAY_PORT__), so changing OE_MCP_RELAY_PORT without rebuilding
+ * the extension leaves the two sides on different ports — the daemon runs fine,
+ * the extension polls a port nobody listens on, and every tool fails with
+ * "relay not connected". Pure so it is unit-testable.
+ */
+export function analyzeExtensionPortSync(input: {
+  configuredPort: number;
+  /** Contents of extension/dist/background.js, or null when not built/present. */
+  extensionSource: string | null;
+}): DoctorCheck[] {
+  if (input.extensionSource === null) {
+    return [
+      {
+        level: "pass",
+        code: "extension-port",
+        message: "extension/dist not found — skipping the port-sync check.",
+      },
+    ];
+  }
+  const match =
+    input.extensionSource.match(/127\.0\.0\.1:\$\{(\d+)\}/) ??
+    input.extensionSource.match(/127\.0\.0\.1:(\d+)/);
+  if (!match) {
+    return [
+      {
+        level: "warn",
+        code: "extension-port",
+        message: "Could not find the baked relay port in extension/dist/background.js.",
+        hint: "Rebuild it: cd extension && npm run build (set OE_MCP_RELAY_PORT first if you changed it).",
+      },
+    ];
+  }
+  const bakedPort = parseInt(match[1], 10);
+  if (bakedPort !== input.configuredPort) {
+    return [
+      {
+        level: "fail",
+        code: "extension-port",
+        message: `Extension is built for port ${bakedPort} but OE_MCP_RELAY_PORT resolves to ${input.configuredPort} — they cannot talk.`,
+        hint:
+          `Rebuild + reload: cd extension && OE_MCP_RELAY_PORT=${input.configuredPort} npm run build, ` +
+          "then chrome://extensions → reload the unpacked extension.",
+      },
+    ];
+  }
+  return [
+    {
+      level: "pass",
+      code: "extension-port",
+      message: `Extension and relay agree on port ${bakedPort}.`,
+    },
+  ];
+}
+
+/**
  * Audit running relay daemons. Exactly one should exist; extras are orphans that
  * accumulate without garbage collection (sleep/wake, port drift, respawns). The
  * daemon now self-reaps, but this surfaces any survivors so `make reap` can clear
@@ -423,27 +479,57 @@ async function main(): Promise<void> {
   const config = resolveConfig();
   ensureConfigDirs(config);
 
-  const raw = await readFile(config.cookiesPath, "utf8").catch((error: unknown) => {
-    throw new Error(
-      `Cannot read cookies at ${config.cookiesPath}: ${error instanceof Error ? error.message : String(error)}`,
-    );
-  });
-  const cookies = parseRawCookies(JSON.parse(raw) as unknown);
-  const fingerprint = await loadBrowserFingerprint(config.fingerprintPath);
   const host: HostSignature = { platform: osPlatform(), arch: osArch() };
+  const checks: DoctorCheck[] = [];
 
-  const checks: DoctorCheck[] = analyzeDatadomeStatic({
-    cookies,
-    fingerprint,
-    fingerprintIsDefault: !config.fingerprintPath || fingerprint === DEFAULT_BROWSER_FINGERPRINT,
-    host,
-    nowMs: Date.now(),
-  });
+  // The cookie/fingerprint checks only matter for the legacy cookie path and
+  // the Python tooling — in relay-all mode the browser tab is the auth, so an
+  // absent or empty cookies.json must not abort the relay diagnostics below.
+  let cookiesUsable = false;
+  try {
+    const raw = await readFile(config.cookiesPath, "utf8");
+    const cookies = parseRawCookies(JSON.parse(raw) as unknown);
+    const fingerprint = await loadBrowserFingerprint(config.fingerprintPath);
+    cookiesUsable = true;
+    checks.push(
+      ...analyzeDatadomeStatic({
+        cookies,
+        fingerprint,
+        fingerprintIsDefault:
+          !config.fingerprintPath || fingerprint === DEFAULT_BROWSER_FINGERPRINT,
+        host,
+        nowMs: Date.now(),
+      }),
+    );
+  } catch (error) {
+    checks.push({
+      level: "warn",
+      code: "cookies-unreadable",
+      message: `cookies.json unavailable (${error instanceof Error ? error.message : String(error)}) — skipping cookie/fingerprint checks.`,
+      hint:
+        "Fine in relay-all mode (the browser tab is the auth). Cookies are only needed for the " +
+        "Python collections tooling and the legacy cookie path; import them with `npm run login`.",
+    });
+  }
 
   checks.push(...relayDaemonChecks());
 
-  if (!offline) {
+  const extensionDistPath = fileURLToPath(
+    new URL("../extension/dist/background.js", import.meta.url),
+  );
+  const extensionSource = await readFile(extensionDistPath, "utf8").catch(() => null);
+  checks.push(
+    ...analyzeExtensionPortSync({ configuredPort: config.relayPort, extensionSource }),
+  );
+
+  if (!offline && cookiesUsable) {
     checks.push(...(await runLiveProbe(config)));
+  } else if (!offline) {
+    checks.push({
+      level: "warn",
+      code: "live-probe-skipped",
+      message: "Live probe skipped — it uses the cookie path and cookies.json is unavailable.",
+    });
   }
 
   const header: Record<string, string> = {

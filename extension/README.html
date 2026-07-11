@@ -110,6 +110,9 @@
       Green means a Claude/Codex session can reach OpenEvidence right now. This page talks to the
       local relay on <code>127.0.0.1:__RELAY_PORT__</code>.
     </p>
+    <div id="debug" style="display:none; margin-top:12px">
+      <pre style="margin:0"><code id="debuglog"></code></pre>
+    </div>
   </div>
 
   <h2>What it does</h2>
@@ -160,8 +163,9 @@
 
   <h2>Troubleshooting</h2>
   <ul class="tidy">
-    <li><b>Badge not green?</b> Make sure you’re logged in to openevidence.com in this browser and a tab is open, then reload the extension (<code>chrome://extensions</code> → ↻).</li>
-    <li><b>“Relay not reachable”?</b> Start your AI tool / MCP server so the relay daemon comes up, then click <i>Check connection</i> again.</li>
+    <li><b>Badge not green?</b> The debug panel above lists the exact failure and the fix. This page also rechecks every 3 seconds, so it turns green by itself once the cause is fixed.</li>
+    <li><b>Reloading the extension:</b> <code>chrome://extensions</code> (or <code>brave://extensions</code>, <code>edge://extensions</code>) → ↻ on this extension. Needed after every rebuild.</li>
+    <li><b>Changed <code>OE_MCP_RELAY_PORT</code>?</b> Rebuild this extension with the same value (<code>cd extension &amp;&amp; OE_MCP_RELAY_PORT=&lt;port&gt; npm run build</code>) and reload it — the port is baked in at build time. <code>npm run doctor</code> checks the sync.</li>
     <li>Run the relay only in <b>one browser at a time</b> if you have it installed in several — requests go to whichever answers first.</li>
   </ul>
 

@@ -80,6 +80,13 @@ export function startRelayServer(options: RelayServerOptions): Promise<RelayServ
   const waiters: Waiter[] = [];
   let lastPollAt = 0;
   let counter = 0;
+  // Live stats surfaced on /health so the extension's status page can show what
+  // the relay is actually doing, not just that it exists. Additive fields only —
+  // the client contract (connected/version/pid) is unchanged.
+  const startedAt = now();
+  let served = 0;
+  let errored = 0;
+  let lastActivityAt = 0;
 
   const cors = (res: ServerResponse): void => {
     res.setHeader("access-control-allow-origin", "*");
@@ -171,6 +178,10 @@ export function startRelayServer(options: RelayServerOptions): Promise<RelayServ
         pending: pending.size,
         version: RELAY_VERSION,
         pid: process.pid,
+        startedAt,
+        served,
+        errored,
+        lastActivityAt,
       });
       return;
     }
@@ -224,9 +235,12 @@ export function startRelayServer(options: RelayServerOptions): Promise<RelayServ
           }
           clearTimeout(p.timer);
           pending.delete(p.reqId);
+          lastActivityAt = now();
           if (data.error) {
+            errored += 1;
             p.reject(new Error(`extension: ${data.error}`));
           } else {
+            served += 1;
             p.resolve({ status: data.status ?? 0, body: data.body ?? "" });
           }
           sendJson(res, 200, { ok: true });
@@ -245,12 +259,15 @@ export function startRelayServer(options: RelayServerOptions): Promise<RelayServ
   function request(req: RelayRequest, opts?: { timeoutMs?: number }): Promise<RelayResponse> {
     const timeoutMs = opts?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     counter += 1;
+    lastActivityAt = now();
     const reqId = `req-${counter}-${now().toString(36)}`;
     return new Promise<RelayResponse>((resolve, reject) => {
       const timer = setTimeout(() => {
         pending.delete(reqId);
         const i = outbox.findIndex((x) => x.reqId === reqId);
         if (i >= 0) outbox.splice(i, 1);
+        errored += 1;
+        lastActivityAt = now();
         reject(new Error(`relay: extension did not respond within ${timeoutMs}ms`));
       }, timeoutMs);
       const p: PendingReq = { reqId, req, resolve, reject, timer };

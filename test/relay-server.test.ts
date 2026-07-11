@@ -84,3 +84,54 @@ test("relay: /health reports connection state", async () => {
     relay.close();
   }
 });
+
+test("relay: /health carries live stats (uptime, served, errored, last activity)", async () => {
+  const relay = await startRelayServer({ port: 0 });
+  const health = () =>
+    fetch(`http://127.0.0.1:${relay.port}/health`).then((r) => r.json()) as Promise<{
+      startedAt: number;
+      served: number;
+      errored: number;
+      lastActivityAt: number;
+      pending: number;
+    }>;
+  try {
+    const before = await health();
+    assert.ok(typeof before.startedAt === "number" && before.startedAt > 0);
+    assert.equal(before.served, 0);
+    assert.equal(before.errored, 0);
+    assert.equal(before.lastActivityAt, 0);
+
+    // One served round-trip…
+    const pollP = fetch(`http://127.0.0.1:${relay.port}/poll`).then((r) => r.json());
+    const reqP = relay.request({ method: "GET", path: "/api/x" }, { timeoutMs: 5000 });
+    const delivered = (await pollP) as { reqId: string };
+    await post(`http://127.0.0.1:${relay.port}/result`, {
+      reqId: delivered.reqId,
+      status: 200,
+      body: "{}",
+    });
+    await reqP;
+
+    // …and one extension-reported failure.
+    const pollP2 = fetch(`http://127.0.0.1:${relay.port}/poll`).then((r) => r.json());
+    const reqP2 = relay.request({ method: "GET", path: "/api/y" }, { timeoutMs: 5000 });
+    // Attach the rejection handler before the result lands, or the runner sees
+    // a momentarily-unhandled rejection.
+    const rejected = assert.rejects(reqP2, /extension: boom/);
+    const delivered2 = (await pollP2) as { reqId: string };
+    await post(`http://127.0.0.1:${relay.port}/result`, {
+      reqId: delivered2.reqId,
+      error: "boom",
+    });
+    await rejected;
+
+    const after = await health();
+    assert.equal(after.served, 1);
+    assert.equal(after.errored, 1);
+    assert.ok(after.lastActivityAt >= before.startedAt);
+    assert.equal(after.pending, 0);
+  } finally {
+    relay.close();
+  }
+});

@@ -1,3 +1,9 @@
+// dotenv first: when launched by hand (npm run relay) from the repo, .env must
+// yield the same OE_MCP_RELAY_PORT the MCP server and the extension use —
+// otherwise the daemon binds a port nobody talks to. (When spawned by the
+// server, the env is inherited and this import is a no-op.)
+import "dotenv/config";
+
 import { readFileSync, unlinkSync, writeFileSync } from "node:fs";
 
 import { ensureConfigDirs, resolveConfig } from "./config.js";

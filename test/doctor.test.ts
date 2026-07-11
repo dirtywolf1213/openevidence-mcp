@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 
 import {
   analyzeDatadomeStatic,
+  analyzeExtensionPortSync,
   parseRawCookies,
   summarize,
   type DoctorCheck,
@@ -157,4 +158,43 @@ test("parseRawCookies reads both array and storage-state shapes with expiry", ()
   assert.equal(state[0].expires, null);
 
   assert.throws(() => parseRawCookies({ nope: true }), /Unsupported cookie file/);
+});
+
+test("extension port sync: matching baked port passes", () => {
+  const checks = analyzeExtensionPortSync({
+    configuredPort: 8780,
+    extensionSource: 'const RELAY_BASE = `http://127.0.0.1:${8780}`;',
+  });
+  assert.equal(checks[0].level, "pass");
+  assert.match(checks[0].message, /8780/);
+});
+
+test("extension port sync: drifted port fails with a rebuild hint", () => {
+  const checks = analyzeExtensionPortSync({
+    configuredPort: 8780,
+    extensionSource: 'const RELAY_BASE = `http://127.0.0.1:${8787}`;',
+  });
+  assert.equal(checks[0].level, "fail");
+  assert.match(checks[0].message, /8787/);
+  assert.match(checks[0].message, /8780/);
+  assert.match(checks[0].hint ?? "", /OE_MCP_RELAY_PORT=8780 npm run build/);
+});
+
+test("extension port sync: plain literal port form is also recognized", () => {
+  const checks = analyzeExtensionPortSync({
+    configuredPort: 9000,
+    extensionSource: 'fetch("http://127.0.0.1:9000/poll")',
+  });
+  assert.equal(checks[0].level, "pass");
+});
+
+test("extension port sync: missing dist skips, unparseable source warns", () => {
+  assert.equal(
+    analyzeExtensionPortSync({ configuredPort: 8787, extensionSource: null })[0].level,
+    "pass",
+  );
+  assert.equal(
+    analyzeExtensionPortSync({ configuredPort: 8787, extensionSource: "no port here" })[0].level,
+    "warn",
+  );
 });

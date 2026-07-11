@@ -44,6 +44,7 @@ const DEFAULT_ARTIFACT_DIR = path.join(tmpdir(), "openevidence-mcp");
 
 export function resolveConfig(): AppConfig {
   const rootDir = process.env.OE_MCP_ROOT_DIR ?? DEFAULT_ROOT;
+  const relayPort = parseInt(process.env.OE_MCP_RELAY_PORT ?? "8787", 10);
   const localCookiesPath = path.resolve(process.cwd(), "cookies.json");
   const cookiesPath =
     process.env.OE_MCP_COOKIES_PATH ??
@@ -69,9 +70,14 @@ export function resolveConfig(): AppConfig {
     pollIntervalMs: parseInt(process.env.OE_MCP_POLL_INTERVAL_MS ?? "1200", 10),
     pollTimeoutMs: parseInt(process.env.OE_MCP_POLL_TIMEOUT_MS ?? "180000", 10),
     relayEnabled: process.env.OE_MCP_RELAY !== "0",
-    relayPort: parseInt(process.env.OE_MCP_RELAY_PORT ?? "8787", 10),
-    relayPidPath: process.env.OE_MCP_RELAY_PID_PATH ?? path.join(rootDir, "relay.pid"),
-    relayLogPath: process.env.OE_MCP_RELAY_LOG_PATH ?? path.join(rootDir, "relay.log"),
+    relayPort,
+    // Port-scoped by default: a daemon's pidfile is its supersede/reap identity,
+    // so daemons on DIFFERENT ports must never share one — otherwise each sees
+    // the other's live pid as "I've been superseded" and they kill each other.
+    relayPidPath:
+      process.env.OE_MCP_RELAY_PID_PATH ?? path.join(rootDir, `relay-${relayPort}.pid`),
+    relayLogPath:
+      process.env.OE_MCP_RELAY_LOG_PATH ?? path.join(rootDir, `relay-${relayPort}.log`),
     relayTransport: process.env.OE_MCP_RELAY_TRANSPORT === "off" ? "off" : "all",
     rateLimit: resolveRateLimitConfig(),
   };
