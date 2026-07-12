@@ -308,6 +308,11 @@ export class OpenEvidenceClient {
  * browser-extension relay so both submit a byte-identical ask.
  */
 export function buildAskBody(payload: OpenEvidenceAskRequest): Record<string, unknown> {
+  // Field set and order mirror the live site's POST /api/article capture
+  // (2026-07-13): article_type, inputs{variant_configuration_file, attachments,
+  // question, use_gatekeeper, component_config_version}, original_article?,
+  // personalization_enabled. The browser omits disable_caching entirely, so it
+  // is only emitted when explicitly requested.
   const body: Record<string, unknown> = {
     article_type: payload.articleType ?? DEFAULT_ARTICLE_TYPE,
     inputs: {
@@ -315,13 +320,18 @@ export function buildAskBody(payload: OpenEvidenceAskRequest): Record<string, un
       attachments: [],
       question: payload.question,
       use_gatekeeper: true,
+      component_config_version: "stable",
     },
-    personalization_enabled: payload.personalizationEnabled ?? false,
-    disable_caching: payload.disableCaching ?? false,
   };
 
   if (payload.originalArticleId) {
     body.original_article = payload.originalArticleId;
+  }
+
+  body.personalization_enabled = payload.personalizationEnabled ?? false;
+
+  if (payload.disableCaching) {
+    body.disable_caching = true;
   }
 
   return body;
