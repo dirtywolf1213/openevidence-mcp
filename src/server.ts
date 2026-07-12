@@ -8,11 +8,14 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 
-import { connectSharedRelay, type RelayClient } from "./relay-client.js";
-import { extractFigures, saveArticleArtifacts } from "./citations.js";
+import { connectSharedRelay, fetchRelayHealth, type RelayClient } from "./relay-client.js";
+import { RELAY_VERSION } from "./relay-server.js";
+import { AnswersDb } from "./answers-db.js";
+import { extractCitations, extractFigures, saveArticleArtifacts } from "./citations.js";
 import { ensureConfigDirs, resolveConfig } from "./config.js";
 import {
 	extractAnswerText,
+	extractFollowUpQuestions,
 	fetchHtmlWithCookies,
 	OpenEvidenceClient,
 	resolveVisualTags,
@@ -78,11 +81,112 @@ const server = new McpServer({
 	version: "1.0.0",
 });
 
+// ---- local answers store (SQLite, shared file with the Python collections CLI) ----
+
+// Lazy so a failed open (unwritable dir, exotic Node build without node:sqlite)
+// degrades to "store disabled" instead of killing the server or any tool call.
+let answersDbHandle: AnswersDb | null | undefined;
+function getAnswersDb(): AnswersDb | null {
+	if (answersDbHandle === undefined) {
+		try {
+			answersDbHandle = AnswersDb.open(config.dbPath);
+		} catch (err) {
+			answersDbHandle = null;
+			process.stderr.write(`[answers-db] disabled (${config.dbPath}): ${String(err)}\n`);
+		}
+	}
+	return answersDbHandle;
+}
+
+// Login email (or auth sub) captured on every authenticated tool call — the
+// same account key the Python CLI writes, so the tables join cleanly.
+let lastKnownAccount: string | null = null;
+
+/** Best-effort upsert of a fetched answer; storage must never fail the tool. */
+function persistAnswer(
+	article: Record<string, unknown>,
+	resolvedAnswer: string | null,
+	figures: ReturnType<typeof extractFigures>,
+): void {
+	try {
+		const db = getAnswersDb();
+		const articleId = String(article.id ?? "");
+		const status = String(article.status ?? "");
+		if (!db || !articleId || status === "" || resolvedAnswer == null) return;
+		const inputs = article.inputs as { question?: unknown } | undefined;
+		db.upsert({
+			account: lastKnownAccount ?? "unknown",
+			articleId,
+			title: typeof article.title === "string" ? article.title : null,
+			question: typeof inputs?.question === "string" ? inputs.question : null,
+			answerMarkdown: resolvedAnswer,
+			citationsJson: JSON.stringify(extractCitations(article, resolvedAnswer)),
+			figuresJson: JSON.stringify(figures),
+			followUpJson: JSON.stringify(extractFollowUpQuestions(article)),
+			articleType: typeof article.article_type === "string" ? article.article_type : null,
+			status,
+			datetimeCreated:
+				typeof article.datetime_created === "string" ? article.datetime_created : null,
+			fetchedAt: new Date().toISOString(),
+		});
+	} catch (err) {
+		process.stderr.write(`[answers-db] upsert failed: ${String(err)}\n`);
+	}
+}
+
+server.registerTool(
+	"oe_health",
+	{
+		title: "OpenEvidence Relay Health",
+		description:
+			"Millisecond-fast local check of the relay pipeline (daemon + browser extension) — no OpenEvidence network call. " +
+			"Use this to confirm the pipeline is up before oe_ask; use oe_auth_status only when you need to verify the login session itself.",
+	},
+	async () => {
+		if (!config.relayEnabled) {
+			return ok({ healthy: false, relay_enabled: false, port: config.relayPort });
+		}
+		const h = await fetchRelayHealth(config.relayPort);
+		if (!h) {
+			return ok({
+				healthy: false,
+				relay_enabled: true,
+				port: config.relayPort,
+				daemon: "down",
+				hint: "Relay daemon is not answering on this port. It respawns on the next oe_ask, or run `make doctor` to diagnose.",
+			});
+		}
+		const versionMatch = h.version === RELAY_VERSION;
+		const startedAt = typeof h.startedAt === "number" ? h.startedAt : null;
+		const lastActivityAt = typeof h.lastActivityAt === "number" ? h.lastActivityAt : null;
+		return ok({
+			healthy: h.connected === true && versionMatch,
+			relay_enabled: true,
+			port: config.relayPort,
+			daemon: "up",
+			extension_connected: h.connected === true,
+			version: h.version,
+			version_expected: RELAY_VERSION,
+			version_match: versionMatch,
+			pid: h.pid,
+			uptime_sec: startedAt != null ? Math.round((Date.now() - startedAt) / 1000) : null,
+			requests_served: h.served,
+			requests_errored: h.errored,
+			requests_pending: h.pending,
+			last_activity: lastActivityAt ? new Date(lastActivityAt).toISOString() : null,
+			...(h.connected !== true && {
+				hint: "Daemon is up but the browser extension is not polling — check the extension is loaded and the browser is running.",
+			}),
+		});
+	},
+);
+
 server.registerTool(
 	"oe_auth_status",
 	{
 		title: "OpenEvidence Auth Status",
-		description: "Check if the local OpenEvidence session is valid.",
+		description:
+			"Check if the local OpenEvidence session is valid (full network round-trip). For a fast pipeline-connectivity check use oe_health instead.",
 	},
 	async () =>
 		withClient(async (client) => {
@@ -119,7 +223,8 @@ server.registerTool(
 		title: "OpenEvidence Article Get",
 		description:
 			"Fetch an article (answer) by id or /ask/ URL — the fetch-later half of fire-and-forget oe_ask. " +
-			"Returns the current status; if it is still 'pending' either retry later or pass wait_for_completion:true to block until the answer is ready.",
+			"Returns the current status; if it is still 'pending' either retry later or pass wait_for_completion:true to block until the answer is ready. " +
+			"Completed answers are served from the local SQLite store when available (from_cache:true, zero network) — pass refresh:true to force a re-fetch from OpenEvidence.",
 		inputSchema: z.object({
 			article_id: z
 				.string()
@@ -131,10 +236,38 @@ server.registerTool(
 			crossref_validate: z.boolean().default(true).optional(),
 			include_bibtex: z.boolean().default(true).optional(),
 			strip_citation_markers: z.boolean().default(false).optional(),
+			refresh: z
+				.boolean()
+				.default(false)
+				.optional()
+				.describe("Bypass the local answers cache and re-fetch from OpenEvidence."),
 		}),
 	},
-	async (args) =>
-		withClient(async (client) => {
+	async (args) => {
+		const cachedId = extractArticleId(args.article_id);
+		// Cache check runs BEFORE withClient so a hit costs zero network round-trips
+		// (withClient itself does an auth GET over the relay).
+		if (cachedId && !(args.refresh ?? false)) {
+			const rec = getAnswersDb()?.getByArticleId(cachedId);
+			if (rec && rec.status === "success" && rec.answerMarkdown != null) {
+				return ok({
+					article_id: cachedId,
+					status: rec.status,
+					extracted_answer_raw: rec.answerMarkdown,
+					...(args.strip_citation_markers ?? false
+						? { extracted_answer_clean: stripCitationMarkers(rec.answerMarkdown) }
+						: {}),
+					figures: safeJsonParse(rec.figuresJson) ?? [],
+					citations: safeJsonParse(rec.citationsJson) ?? [],
+					follow_up_questions: safeJsonParse(rec.followUpJson) ?? [],
+					artifacts: null,
+					from_cache: true,
+					fetched_at: rec.fetchedAt,
+					note: `Served from the local answers store (${config.dbPath}). Pass refresh:true to re-fetch from OpenEvidence and regenerate artifacts.`,
+				});
+			}
+		}
+		return withClient(async (client) => {
 			const articleId = extractArticleId(args.article_id);
 			if (!articleId) {
 				return fail(
@@ -157,6 +290,7 @@ server.registerTool(
 						})
 					: null;
 			const answer = answerRaw ? resolveVisualTags(answerRaw, figures) : null;
+			persistAnswer(article, answer, figures);
 			return ok({
 				article_id: articleId,
 				status: String(article.status ?? ""),
@@ -165,12 +299,56 @@ server.registerTool(
 					? { extracted_answer_clean: stripCitationMarkers(answer) }
 					: {}),
 				figures,
+				follow_up_questions: extractFollowUpQuestions(article),
+				follow_up_hint:
+					"To continue this thread, call oe_ask with one of follow_up_questions (or your own) and original_article_id set to this article_id.",
 				artifacts: formatArtifactsForResponse(
 					artifacts,
 					args.include_bibtex ?? true,
 				),
 			});
+		});
+	},
+);
+
+server.registerTool(
+	"oe_answers_search",
+	{
+		title: "Search Stored Answers (local FTS)",
+		description:
+			"Full-text search (SQLite FTS5) over every answer previously fetched by oe_ask/oe_article_get — questions, titles, and answer bodies. " +
+			"Millisecond-fast and fully offline: no OpenEvidence traffic, no rate-limit cost. " +
+			"Covers only answers this MCP has fetched and stored locally; for your complete server-side history use oe_history_list. " +
+			"Snippets mark matches with »…«.",
+		inputSchema: z.object({
+			query: z
+				.string()
+				.min(1)
+				.max(500)
+				.describe("FTS5 query — plain words, \"quoted phrases\", AND/OR/NOT."),
+			limit: z.number().int().min(1).max(50).default(10).optional(),
 		}),
+	},
+	async (args) => {
+		const db = getAnswersDb();
+		if (!db) {
+			return fail(`Local answers store is unavailable (could not open ${config.dbPath}).`);
+		}
+		const matches = db.search(args.query, args.limit ?? 10);
+		return ok({
+			total_stored: db.count(),
+			match_count: matches.length,
+			matches: matches.map((m) => ({
+				article_id: m.articleId,
+				title: m.title,
+				question: m.question,
+				snippet: m.snippet,
+				datetime_created: m.datetimeCreated,
+				fetched_at: m.fetchedAt,
+				url: `https://www.openevidence.com/ask/${m.articleId}`,
+			})),
+		});
+	},
 );
 
 server.registerTool(
@@ -266,6 +444,7 @@ server.registerTool(
 					: null;
 			
 			const answer = answerRaw ? resolveVisualTags(answerRaw, figures) : null;
+			persistAnswer(article, answer, figures);
 			return ok({
 				article_id: articleId,
 				status: String(article.status ?? ""),
@@ -274,6 +453,9 @@ server.registerTool(
 					? { extracted_answer_clean: stripCitationMarkers(answer) }
 					: {}),
 				figures,
+				follow_up_questions: extractFollowUpQuestions(article),
+				follow_up_hint:
+					"To continue this thread, call oe_ask with one of follow_up_questions (or your own) and original_article_id set to this article_id.",
 				artifacts: formatArtifactsForResponse(artifacts, args.include_bibtex ?? true),
 			});
 		}),
@@ -632,6 +814,8 @@ async function withClient(
 	try {
 		await client.init();
 		const auth = await client.getAuthStatus();
+		const user = (auth as { user?: { email?: string; sub?: string } }).user;
+		lastKnownAccount = user?.email ?? user?.sub ?? lastKnownAccount;
 		if (!auth.authenticated) {
 			return fail(
 				config.relayTransport === "all"
@@ -660,6 +844,16 @@ function fail(message: string) {
 		isError: true,
 		content: [{ type: "text" as const, text: message }],
 	};
+}
+
+function safeJsonParse(raw: string | null): unknown[] | null {
+	if (!raw) return null;
+	try {
+		const parsed = JSON.parse(raw) as unknown;
+		return Array.isArray(parsed) ? parsed : null;
+	} catch {
+		return null;
+	}
 }
 
 function toStructured(data: unknown): Record<string, unknown> {

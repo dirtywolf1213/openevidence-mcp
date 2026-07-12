@@ -6,7 +6,48 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-07-12
+
 ### Added
+- **Follow-up questions surfaced + threaded conversations.** `oe_ask` and
+  `oe_article_get` now return **`follow_up_questions`** — the suggestions
+  OpenEvidence renders under an answer (from
+  `output.structured_article.follow_up_questions`), plus a `follow_up_hint`.
+  To continue the same conversation, pass any of them (or your own) back as
+  `oe_ask({ question, original_article_id })`: OpenEvidence rebuilds the
+  conversation history server-side (you only send `original_article` + the new
+  question), and the answer threads on the prior turn. The stored follow-ups are
+  persisted in the answers table (`follow_up_json`) and returned on cache hits
+  too. (The follow-up POST path already existed; this makes the suggestions
+  visible and documents the threading.)
+- **Local answer store — `oe_answers_search` + `oe_article_get` cache.** Every
+  completed answer from `oe_ask` / `oe_article_get` is now upserted into an
+  `answers` table in the shared SQLite file (`~/.openevidence-mcp/db/oe.sqlite`,
+  `$OE_MCP_DB_PATH`), alongside the collections mirror. This unlocks two things:
+  - **`oe_answers_search(query)`** — full-text search (SQLite FTS5) over the
+    questions, titles, and answer bodies of everything this MCP has fetched.
+    Fully offline: no OpenEvidence traffic, no rate-limit cost. Returns
+    `bm25`-ranked hits with `»…«`-highlighted snippets and the `/ask/` URL.
+    Query is FTS5 syntax (plain words ANDed, `"phrases"`, `AND`/`OR`/`NOT`);
+    malformed queries fall back to a quoted-token literal search instead of
+    erroring.
+  - **`oe_article_get` cache hits** — an already-stored answer is served from
+    disk with `from_cache: true` and **zero network round-trips** (it doesn't
+    even touch the relay). Pass `refresh: true` to force a re-fetch and
+    regenerate the on-disk citation artifacts.
+
+  The store persists across reboots (unlike the OS-temp-dir artifacts), holds
+  only answers this MCP fetched, and uses the built-in `node:sqlite` (Node ≥ 22,
+  no new dependency). Writes are best-effort — a store failure never fails a
+  tool call. New module `src/answers-db.ts`; keyed `(account, article_id)` on
+  the login email so it joins the Python CLI's tables cleanly.
+- **`oe_health` — millisecond-fast relay pipeline check.** Reads the relay
+  daemon's `/health` locally (no OpenEvidence network call, unlike
+  `oe_auth_status`) and reports whether the daemon is up, whether the browser
+  extension is actually polling (`extension_connected`), the protocol-version
+  match, uptime, and served/errored/pending counts. Each failure state carries
+  a `hint`. Use it to confirm the plumbing before an ask or to diagnose a stuck
+  relay; use `oe_auth_status` only when you need to verify the login session.
 - **`oe_public_get` — read conversation pages by `/ask/` link.** Fetches an
   `https://www.openevidence.com/ask/<id>` page and parses it into Q&A turns:
   question, answer as clean markdown, references under a rebuilt
@@ -62,7 +103,44 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   session — a freshly-created article is always visible to the poller (no
   creator/account mismatch between a browser tab and `cookies.json`).
 
+### Changed
+- **Extension status page gains a live activity feed, and the toolbar icon a
+  connection light (extension 0.3.0).** The how-it-works/status page now shows a
+  vivid, live feed of what the relay is doing — "🔍 Asked a question", "📄
+  Fetched answer", "🔑 Checked login" — each with a timestamp, duration, and
+  HTTP status, updating in real time via `chrome.storage.onChanged`. Bursts of
+  polling one article to completion collapse into a single row with a poll
+  counter, so a whole `oe_ask` shows as ~3 lines, not thirty. The toolbar icon
+  now carries a one-glance badge: green when the relay is connected and idle,
+  blue while a request is in flight, grey when the relay is unreachable — so you
+  can see the state without opening the page. Events are kept in a bounded
+  (60-entry) `storage.local` ring buffer; a Clear button empties it.
+- **Extension survives a Chrome-discarded parked tab.** Under memory pressure
+  Chrome can discard the background relay tab (the id stays valid but the
+  document is gone, so `executeScript` would fail). `ensureOeTab` now reloads a
+  discarded tab before use, and `runProxy` retries once against a freshly-rebuilt
+  tab if injection still fails — a discarded/killed tab is now self-healing
+  rather than a failed request.
+- **Relay tab parks on a lightweight page — ~100 MB less RAM, zero background
+  OpenEvidence traffic.** The extension's pinned tab now sits on
+  `openevidence.com/robots.txt` (text/plain, 0 scripts, 7 DOM nodes) instead of
+  the full SPA at `/` (~118 MB JS heap, 229 scripts). The light page still
+  carries the origin/cookies/TLS DataDome checks — a `POST /api/article` from it
+  returns 201 (verified), and `chrome.scripting.executeScript` injects into it
+  fine (isolated-world injection verified). Beyond the memory win, the SPA used
+  to fire ~25 requests at OpenEvidence on every load (a 404 page fires ~60);
+  the light page fires **one** GET and nothing in the background, so the parked
+  tab no longer quietly eats into the account's rate-limit budget. Legacy tabs
+  still parked on `/` are retired onto the light page on next use. Extension
+  bumped to 0.2.0 — **reload the unpacked extension** to pick this up.
+
 ### Fixed
+- **Extension no longer piles up pinned OpenEvidence tabs across browser
+  restarts.** `chrome.storage.session` is wiped on restart but Chrome restores
+  pinned tabs, so the relay's parked tab came back untracked and `ensureOeTab`
+  opened a fresh sibling every launch. It now adopts the existing pinned
+  `openevidence.com/` tab (and closes any extra orphans) before creating a new
+  one. Reload the unpacked extension to pick this up.
 - `waitForArticle` polls through the transient `404` a just-created article returns
   until OpenEvidence finishes provisioning it, instead of aborting the ask on the
   first poll.

@@ -37,6 +37,14 @@ The extension keeps **one pinned, background OpenEvidence tab** (tracked by tab
 id, so it never touches a tab you opened yourself) and runs the request there.
 No visible navigation — the tab just sits on openevidence.com.
 
+That parked tab loads the lightest possible same-origin document —
+`openevidence.com/robots.txt` (text/plain), **not** the full web app. It still
+carries the openevidence.com origin, cookies, and TLS that DataDome checks (a
+`POST /api/article` from it is accepted), while loading zero app scripts. This
+keeps the tab's memory footprint tiny (~100 MB less than parking on the SPA) and
+means the parked tab fires **no** background requests at OpenEvidence, so it
+never quietly spends your account's rate-limit budget.
+
 ## Which browser handles a call
 
 The request is handled by **whichever browser has this extension installed and is
@@ -99,5 +107,18 @@ openevidence.com — allow it.
 
 ## Checking it's connected
 
-With the server running: `curl http://127.0.0.1:8787/health` →
-`{"ok":true,"connected":true,"version":1,"pid":12345}` once the extension is polling.
+Three ways, quickest first:
+
+- **Toolbar badge** — the extension icon carries a live connection light: **green**
+  = relay connected and idle, **blue** = a request is in flight, **grey** = the
+  relay isn't reachable. No clicking needed.
+- **Status page** — click the toolbar icon. Beyond the green/red connection badge,
+  it shows a **live activity feed** of what the relay is doing — "🔍 Asked a
+  question", "📄 Fetched answer", "🔑 Checked login" — each with a timestamp,
+  duration, and HTTP status, updating in real time. A whole `oe_ask` (submit +
+  poll-to-completion) collapses into a couple of lines rather than flooding the
+  feed. The activity history lives in a bounded `storage.local` ring buffer; the
+  Clear button empties it.
+- **curl** — with the server running: `curl http://127.0.0.1:8787/health` →
+  `{"ok":true,"connected":true,"version":1,"pid":12345}` once the extension is
+  polling. (This is the same endpoint the MCP server's `oe_health` tool reads.)

@@ -163,3 +163,88 @@ async function check() {
 
 btnEl.addEventListener("click", check);
 check();
+
+// ---- live activity feed -------------------------------------------------------
+// The background worker records each relayed request into chrome.storage.local
+// (this page is an extension page, so storage is readable here). We render it and
+// live-update via storage.onChanged — no polling.
+const ACTIVITY_KEY = "oeRelayActivity";
+const activityEl = document.getElementById("activity");
+const clearBtn = document.getElementById("clearlog");
+const EMPTY =
+  '<li class="muted">No activity yet — ask OpenEvidence from your AI tool and watch it appear here.</li>';
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"]/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c],
+  );
+}
+
+function fmtClock(t) {
+  try {
+    return new Date(t).toLocaleTimeString();
+  } catch {
+    return "";
+  }
+}
+
+function renderActivity(log) {
+  if (!activityEl) return;
+  if (!Array.isArray(log) || log.length === 0) {
+    activityEl.innerHTML = EMPTY;
+    return;
+  }
+  // Newest first.
+  activityEl.innerHTML = log
+    .slice()
+    .reverse()
+    .map((e) => {
+      const done = e.phase === "done";
+      const label = escapeHtml(e.label || "") + (e.count > 1 ? ` <span class="meta">×${e.count}</span>` : "");
+      const dur = done && typeof e.ms === "number" ? ` · ${(e.ms / 1000).toFixed(1)}s` : "";
+      const st = !done
+        ? '<span class="spin">●</span>'
+        : e.ok
+          ? `<span class="pill okp">${e.status}</span>`
+          : `<span class="pill errp">${e.status || "fail"}</span>`;
+      return (
+        `<li class="${done ? "" : "live"}">` +
+        `<span class="ic">${escapeHtml(e.icon || "•")}</span>` +
+        `<span class="lbl">${label}</span>` +
+        `<span class="meta">${fmtClock(e.t)}${dur}</span>` +
+        `<span class="st">${st}</span>` +
+        `</li>`
+      );
+    })
+    .join("");
+}
+
+async function loadActivity() {
+  try {
+    const store = await chrome.storage.local.get(ACTIVITY_KEY);
+    renderActivity(store[ACTIVITY_KEY]);
+  } catch {
+    /* storage unavailable (e.g. opened outside the extension) */
+  }
+}
+
+if (clearBtn) {
+  clearBtn.addEventListener("click", async () => {
+    try {
+      await chrome.storage.local.remove(ACTIVITY_KEY);
+    } catch {
+      /* ignore */
+    }
+    renderActivity([]);
+  });
+}
+
+if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.onChanged) {
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area === "local" && changes[ACTIVITY_KEY]) {
+      renderActivity(changes[ACTIVITY_KEY].newValue);
+    }
+  });
+}
+
+loadActivity();

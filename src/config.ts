@@ -35,6 +35,13 @@ export interface AppConfig {
    * POST. Set OE_MCP_RELAY_TRANSPORT=off to opt out.
    */
   relayTransport: "off" | "all";
+  /**
+   * SQLite file shared with the Python collection-sort CLI ($OE_MCP_DB_PATH,
+   * default ~/.openevidence-mcp/db/oe.sqlite). The Node server adds the
+   * `answers` table (full answer bodies + FTS index) alongside Python's
+   * chats/collections mirror.
+   */
+  dbPath: string;
   rateLimit: RateLimitConfig;
 }
 
@@ -79,6 +86,7 @@ export function resolveConfig(): AppConfig {
     relayLogPath:
       process.env.OE_MCP_RELAY_LOG_PATH ?? path.join(rootDir, `relay-${relayPort}.log`),
     relayTransport: process.env.OE_MCP_RELAY_TRANSPORT === "off" ? "off" : "all",
+    dbPath: process.env.OE_MCP_DB_PATH ?? path.join(rootDir, "db", "oe.sqlite"),
     rateLimit: resolveRateLimitConfig(),
   };
 }

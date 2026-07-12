@@ -1,0 +1,207 @@
+import { mkdirSync } from "node:fs";
+import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
+
+/**
+ * Local store for fetched answers, in the same SQLite file the Python
+ * collection-sort CLI mirrors chats/collections into (~/.openevidence-mcp/db/
+ * oe.sqlite). The `chats` table only carries list-API metadata; this adds the
+ * answer bodies so they survive tmpdir cleanup, are full-text searchable
+ * (FTS5), and let oe_article_get answer from disk instead of the relay.
+ *
+ * Keyed (account, article_id) to match the Python schema's account dimension —
+ * account is the login email (or auth sub), same as collection_sort.py.
+ * Python's migrate() only rebuilds its own tables, so adding ours is safe.
+ */
+
+const SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS answers (
+  account           TEXT NOT NULL,
+  article_id        TEXT NOT NULL,
+  title             TEXT,
+  question          TEXT,
+  answer_markdown   TEXT,
+  citations_json    TEXT,
+  figures_json      TEXT,
+  follow_up_json    TEXT,
+  article_type      TEXT,
+  status            TEXT,
+  datetime_created  TEXT,
+  fetched_at        TEXT NOT NULL,
+  PRIMARY KEY (account, article_id)
+);
+CREATE INDEX IF NOT EXISTS answers_article ON answers(article_id);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS answers_fts USING fts5(
+  question, title, answer_markdown,
+  content='answers', content_rowid='rowid'
+);
+CREATE TRIGGER IF NOT EXISTS answers_fts_ai AFTER INSERT ON answers BEGIN
+  INSERT INTO answers_fts(rowid, question, title, answer_markdown)
+  VALUES (new.rowid, new.question, new.title, new.answer_markdown);
+END;
+CREATE TRIGGER IF NOT EXISTS answers_fts_ad AFTER DELETE ON answers BEGIN
+  INSERT INTO answers_fts(answers_fts, rowid, question, title, answer_markdown)
+  VALUES ('delete', old.rowid, old.question, old.title, old.answer_markdown);
+END;
+CREATE TRIGGER IF NOT EXISTS answers_fts_au AFTER UPDATE ON answers BEGIN
+  INSERT INTO answers_fts(answers_fts, rowid, question, title, answer_markdown)
+  VALUES ('delete', old.rowid, old.question, old.title, old.answer_markdown);
+  INSERT INTO answers_fts(rowid, question, title, answer_markdown)
+  VALUES (new.rowid, new.question, new.title, new.answer_markdown);
+END;
+`;
+
+export interface AnswerRecord {
+  account: string;
+  articleId: string;
+  title: string | null;
+  question: string | null;
+  answerMarkdown: string | null;
+  citationsJson: string | null;
+  figuresJson: string | null;
+  followUpJson: string | null;
+  articleType: string | null;
+  status: string | null;
+  datetimeCreated: string | null;
+  fetchedAt: string;
+}
+
+export interface AnswerSearchHit {
+  articleId: string;
+  account: string;
+  title: string | null;
+  question: string | null;
+  snippet: string;
+  datetimeCreated: string | null;
+  fetchedAt: string;
+}
+
+export class AnswersDb {
+  private constructor(private readonly db: DatabaseSync) {}
+
+  static open(dbPath: string): AnswersDb {
+    mkdirSync(path.dirname(dbPath), { recursive: true });
+    const db = new DatabaseSync(dbPath);
+    // WAL + busy timeout so we coexist with the Python CLI writing the same file.
+    db.exec("PRAGMA journal_mode=WAL");
+    db.exec("PRAGMA busy_timeout=3000");
+    db.exec(SCHEMA_SQL);
+    // Additive migration: earlier builds created `answers` without follow_up_json.
+    const cols = db.prepare("PRAGMA table_info(answers)").all() as { name: string }[];
+    if (!cols.some((c) => c.name === "follow_up_json")) {
+      db.exec("ALTER TABLE answers ADD COLUMN follow_up_json TEXT");
+    }
+    return new AnswersDb(db);
+  }
+
+  upsert(rec: AnswerRecord): void {
+    this.db
+      .prepare(
+        `INSERT INTO answers (account, article_id, title, question, answer_markdown,
+           citations_json, figures_json, follow_up_json, article_type, status,
+           datetime_created, fetched_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(account, article_id) DO UPDATE SET
+           title = excluded.title,
+           question = excluded.question,
+           answer_markdown = excluded.answer_markdown,
+           citations_json = excluded.citations_json,
+           figures_json = excluded.figures_json,
+           follow_up_json = excluded.follow_up_json,
+           article_type = excluded.article_type,
+           status = excluded.status,
+           datetime_created = excluded.datetime_created,
+           fetched_at = excluded.fetched_at`,
+      )
+      .run(
+        rec.account,
+        rec.articleId,
+        rec.title,
+        rec.question,
+        rec.answerMarkdown,
+        rec.citationsJson,
+        rec.figuresJson,
+        rec.followUpJson,
+        rec.articleType,
+        rec.status,
+        rec.datetimeCreated,
+        rec.fetchedAt,
+      );
+  }
+
+  /**
+   * Cache lookup by article id alone (no account) so a hit needs zero network
+   * round-trips — article UUIDs never collide across accounts in practice.
+   */
+  getByArticleId(articleId: string): AnswerRecord | null {
+    const row = this.db
+      .prepare(
+        `SELECT account, article_id, title, question, answer_markdown, citations_json,
+           figures_json, follow_up_json, article_type, status, datetime_created, fetched_at
+         FROM answers WHERE article_id = ? ORDER BY fetched_at DESC LIMIT 1`,
+      )
+      .get(articleId) as Record<string, string | null> | undefined;
+    return row ? rowToRecord(row) : null;
+  }
+
+  search(query: string, limit = 10): AnswerSearchHit[] {
+    const sql = `SELECT a.account, a.article_id, a.title, a.question, a.datetime_created, a.fetched_at,
+        snippet(answers_fts, 2, '»', '«', ' … ', 24) AS snip
+      FROM answers_fts
+      JOIN answers a ON a.rowid = answers_fts.rowid
+      WHERE answers_fts MATCH ?
+      ORDER BY bm25(answers_fts) LIMIT ?`;
+    const run = (match: string) =>
+      this.db.prepare(sql).all(match, limit) as Record<string, string | null>[];
+    let rows: Record<string, string | null>[];
+    try {
+      rows = run(query);
+    } catch {
+      // Raw query tripped FTS5 syntax (unbalanced quotes, stray operators…):
+      // retry with every token quoted, which searches the literal terms.
+      const quoted = query
+        .split(/\s+/)
+        .filter(Boolean)
+        .map((t) => `"${t.replaceAll('"', '""')}"`)
+        .join(" ");
+      if (!quoted) return [];
+      rows = run(quoted);
+    }
+    return rows.map((r) => ({
+      articleId: String(r.article_id),
+      account: String(r.account),
+      title: r.title ?? null,
+      question: r.question ?? null,
+      snippet: String(r.snip ?? ""),
+      datetimeCreated: r.datetime_created ?? null,
+      fetchedAt: String(r.fetched_at ?? ""),
+    }));
+  }
+
+  count(): number {
+    const row = this.db.prepare("SELECT COUNT(*) AS n FROM answers").get() as { n: number };
+    return row.n;
+  }
+
+  close(): void {
+    this.db.close();
+  }
+}
+
+function rowToRecord(row: Record<string, string | null>): AnswerRecord {
+  return {
+    account: String(row.account),
+    articleId: String(row.article_id),
+    title: row.title ?? null,
+    question: row.question ?? null,
+    answerMarkdown: row.answer_markdown ?? null,
+    citationsJson: row.citations_json ?? null,
+    figuresJson: row.figures_json ?? null,
+    followUpJson: row.follow_up_json ?? null,
+    articleType: row.article_type ?? null,
+    status: row.status ?? null,
+    datetimeCreated: row.datetime_created ?? null,
+    fetchedAt: String(row.fetched_at ?? ""),
+  };
+}

@@ -14,9 +14,26 @@ declare const __RELAY_PORT__: number;
 
 const RELAY_BASE = `http://127.0.0.1:${__RELAY_PORT__}`;
 const OE_BASE = "https://www.openevidence.com";
+// Park the relay tab on the lightest possible same-origin document, NOT the
+// full SPA. `/robots.txt` is text/plain: it carries the openevidence.com origin,
+// cookies, and TLS that DataDome checks (a POST /api/article from it returns 201,
+// verified), while loading ZERO app scripts. This saves ~100 MB of browser RAM
+// versus parking at `/` and — just as importantly — fires ZERO background
+// requests at OpenEvidence, where the SPA would otherwise poll telemetry/data
+// endpoints and silently eat into the account's rate-limit budget.
+// `chrome.scripting.executeScript` injects into text/plain fine (isolated-world
+// injection verified against this page).
+const OE_PARK_PATH = "/robots.txt";
+const OE_PARK_URL = `${OE_BASE}${OE_PARK_PATH}`;
 const OE_TAB_KEY = "oeRelayTabId";
 
+// Bounded activity feed the status page renders live. Kept in storage.local so
+// it survives service-worker eviction and shows recent history on open.
+const ACTIVITY_KEY = "oeRelayActivity";
+const ACTIVITY_MAX = 60;
+
 let polling = false;
+let inFlight = 0;
 
 interface RelayRequest {
   method: string;
@@ -30,6 +47,108 @@ interface InTabResult {
   error?: string;
 }
 
+interface ActivityEvent {
+  reqId: string;
+  key: string; // method + path, used to collapse repeated polls into one row
+  t: number; // last-updated time (ms epoch)
+  phase: "start" | "done";
+  icon: string;
+  label: string;
+  count?: number; // how many times this collapsed row fired (poll bursts)
+  status?: number;
+  ms?: number; // duration once done
+  ok?: boolean;
+}
+
+// ---- toolbar badge ------------------------------------------------------------
+
+type BadgeState = "off" | "ok" | "busy" | "err";
+
+// A one-glance connection light on the toolbar icon, so you don't have to open
+// the status page to know the relay is alive. Green = connected & idle, blue =
+// a request is in flight, grey = relay not reachable.
+function setBadge(state: BadgeState): void {
+  const color = { off: "#9ca3af", ok: "#16a34a", busy: "#2563eb", err: "#dc2626" }[state];
+  const title = {
+    off: "OpenEvidence MCP Relay — relay not reachable",
+    ok: "OpenEvidence MCP Relay — connected",
+    busy: "OpenEvidence MCP Relay — request in flight",
+    err: "OpenEvidence MCP Relay — last request failed",
+  }[state];
+  try {
+    void chrome.action.setBadgeText({ text: "●" });
+    void chrome.action.setBadgeBackgroundColor({ color });
+    void chrome.action.setTitle({ title });
+  } catch {
+    /* action API can be momentarily unavailable during teardown */
+  }
+}
+
+// ---- activity feed ------------------------------------------------------------
+
+// Turn a raw relayed request into a human line for the status page — "Asked a
+// question" beats "POST /api/article".
+function describeRequest(req: RelayRequest): { icon: string; label: string } {
+  const path = req.path.split("?")[0];
+  const m = req.method.toUpperCase();
+  if (m === "POST" && /\/api\/article\/?$/.test(path)) return { icon: "🔍", label: "Asked a question" };
+  if (m === "GET" && /\/api\/article\/list/.test(path)) return { icon: "📚", label: "Listed history" };
+  if (m === "GET" && /\/api\/article\/[0-9a-f-]{8,}/i.test(path)) return { icon: "📄", label: "Fetched answer" };
+  if (/\/api\/auth\/me/.test(path)) return { icon: "🔑", label: "Checked login" };
+  if (/\/api\/collection/i.test(path)) return { icon: "🗂️", label: `Collections (${m})` };
+  return { icon: "•", label: `${m} ${path.replace("/api/", "")}` };
+}
+
+// Writes are chained so overlapping requests never clobber each other's
+// read-modify-write of the single storage.local array.
+let activityChain: Promise<void> = Promise.resolve();
+function writeActivity(mutate: (log: ActivityEvent[]) => void): void {
+  activityChain = activityChain
+    .then(async () => {
+      const store = await chrome.storage.local.get(ACTIVITY_KEY);
+      const log: ActivityEvent[] = Array.isArray(store[ACTIVITY_KEY])
+        ? (store[ACTIVITY_KEY] as ActivityEvent[])
+        : [];
+      mutate(log);
+      await chrome.storage.local.set({ [ACTIVITY_KEY]: log });
+    })
+    .catch(() => {});
+}
+
+function activityStart(reqId: string, req: RelayRequest): void {
+  const { icon, label } = describeRequest(req);
+  const key = `${req.method.toUpperCase()} ${req.path.split("?")[0]}`;
+  writeActivity((log) => {
+    const last = log[log.length - 1];
+    // Collapse a burst of identical requests (e.g. the MCP server polling one
+    // article id until it finishes) into a single row that bumps a counter,
+    // instead of flooding the feed.
+    if (last && last.key === key && Date.now() - last.t < 30_000) {
+      last.count = (last.count ?? 1) + 1;
+      last.t = Date.now();
+      last.phase = "start";
+      last.reqId = reqId;
+    } else {
+      log.push({ reqId, key, t: Date.now(), phase: "start", icon, label, count: 1 });
+      while (log.length > ACTIVITY_MAX) log.shift();
+    }
+  });
+}
+
+function activityDone(reqId: string, status: number, ms: number): void {
+  writeActivity((log) => {
+    for (let i = log.length - 1; i >= 0; i -= 1) {
+      if (log[i].reqId === reqId) {
+        log[i].phase = "done";
+        log[i].status = status;
+        log[i].ms = ms;
+        log[i].ok = status >= 200 && status < 400;
+        return;
+      }
+    }
+  });
+}
+
 // ---- dedicated tab management -------------------------------------------------
 
 async function getStoredTabId(): Promise<number | undefined> {
@@ -39,6 +158,10 @@ async function getStoredTabId(): Promise<number | undefined> {
 
 async function setStoredTabId(id: number): Promise<void> {
   await chrome.storage.session.set({ [OE_TAB_KEY]: id });
+}
+
+async function clearStoredTabId(): Promise<void> {
+  await chrome.storage.session.remove(OE_TAB_KEY);
 }
 
 async function waitForTabComplete(tabId: number, timeoutMs = 30_000): Promise<void> {
@@ -59,20 +182,66 @@ async function ensureOeTab(): Promise<number> {
   if (stored != null) {
     try {
       const t = await chrome.tabs.get(stored);
-      if ((t.url ?? "").startsWith(OE_BASE)) return stored;
-      await chrome.tabs.update(stored, { url: `${OE_BASE}/` });
+      // Any openevidence.com page keeps the origin/cookies we need, so an
+      // already-parked tab is reused verbatim — no re-navigation, no extra
+      // request at OpenEvidence.
+      if ((t.url ?? "").startsWith(OE_BASE)) {
+        // Chrome may discard a background tab under memory pressure: it still
+        // exists (id valid) but its document is gone, so executeScript would
+        // fail. Reload it back to life before handing it out.
+        if (t.discarded) {
+          await chrome.tabs.reload(stored);
+          await waitForTabComplete(stored);
+        }
+        return stored;
+      }
+      await chrome.tabs.update(stored, { url: OE_PARK_URL });
       await waitForTabComplete(stored);
       return stored;
     } catch {
-      // tab was closed; create a fresh one below.
+      // tab was closed; adopt or create a fresh one below.
     }
   }
-  const created = await chrome.tabs.create({ url: `${OE_BASE}/`, pinned: true, active: false });
+  // storage.session is wiped on browser restart but Chrome restores pinned tabs,
+  // so our previous parked tab survives as an untracked orphan. Adopt it instead
+  // of creating a sibling — otherwise every restart adds one more pinned tab.
+  // Match our own parked tabs only: pinned, and parked at either the current
+  // light URL or the legacy root `/` (older builds parked there) — never a
+  // user's own pinned /ask/ tab.
+  const pinnedOe = await chrome.tabs.query({ url: `${OE_BASE}/*`, pinned: true });
+  const orphans = pinnedOe.filter((t) => {
+    const path = urlPath(t.url);
+    return path === OE_PARK_PATH || path === "/";
+  });
+  const adopted = orphans[0]?.id;
+  if (adopted != null) {
+    for (const extra of orphans.slice(1)) {
+      if (extra.id != null) await chrome.tabs.remove(extra.id).catch(() => {});
+    }
+    await setStoredTabId(adopted);
+    // A legacy orphan sitting on the heavy `/` SPA is retired onto the light
+    // park page so we stop paying its RAM + background-request cost.
+    if (urlPath(orphans[0]?.url) !== OE_PARK_PATH) {
+      await chrome.tabs.update(adopted, { url: OE_PARK_URL });
+    }
+    await waitForTabComplete(adopted);
+    return adopted;
+  }
+  const created = await chrome.tabs.create({ url: OE_PARK_URL, pinned: true, active: false });
   const id = created.id;
   if (id == null) throw new Error("failed to create OE tab");
   await setStoredTabId(id);
   await waitForTabComplete(id);
   return id;
+}
+
+function urlPath(url: string | undefined): string | null {
+  if (!url) return null;
+  try {
+    return new URL(url).pathname;
+  } catch {
+    return null;
+  }
 }
 
 // ---- the in-tab fetch ---------------------------------------------------------
@@ -89,14 +258,27 @@ function inTabProxy(req: RelayRequest): Promise<InTabResult> {
     .catch((e) => ({ status: 0, body: "", error: String(e) }));
 }
 
-async function runProxy(req: RelayRequest): Promise<InTabResult> {
-  const tabId = await ensureOeTab();
+async function injectFetch(req: RelayRequest): Promise<InTabResult | undefined> {
   const [injection] = await chrome.scripting.executeScript({
-    target: { tabId },
+    target: { tabId: await ensureOeTab() },
     func: inTabProxy,
     args: [req],
   });
-  const out = injection?.result as InTabResult | undefined;
+  return injection?.result as InTabResult | undefined;
+}
+
+async function runProxy(req: RelayRequest): Promise<InTabResult> {
+  let out: InTabResult | undefined;
+  try {
+    out = await injectFetch(req);
+  } catch {
+    // executeScript itself threw — the parked tab was discarded or died between
+    // ensure and inject. Drop the cached id so ensureOeTab rebuilds a fresh tab,
+    // then retry once. (A genuine fetch failure surfaces as out.error below, not
+    // here, so we don't needlessly rebuild the tab for network errors.)
+    await clearStoredTabId();
+    out = await injectFetch(req);
+  }
   if (!out) throw new Error("no result from in-tab fetch");
   if (out.error) throw new Error(out.error);
   return out; // pass status/body through verbatim; Node decides on 4xx/5xx
@@ -122,11 +304,20 @@ async function postResult(payload: {
 }
 
 async function handleRequest(reqId: string, req: RelayRequest): Promise<void> {
+  const startedAt = Date.now();
+  activityStart(reqId, req);
+  inFlight += 1;
+  setBadge("busy");
   try {
     const { status, body } = await runProxy(req);
     await postResult({ reqId, status, body });
+    activityDone(reqId, status, Date.now() - startedAt);
   } catch (e) {
     await postResult({ reqId, error: e instanceof Error ? e.message : String(e) });
+    activityDone(reqId, 0, Date.now() - startedAt);
+  } finally {
+    inFlight = Math.max(0, inFlight - 1);
+    if (inFlight === 0) setBadge("ok");
   }
 }
 
@@ -147,7 +338,12 @@ async function pollLoop(): Promise<void> {
     for (;;) {
       try {
         await pollOnce();
+        // A returned poll (200 delivered a request, or 204 held-then-timed-out)
+        // both mean the relay is reachable. Reflect "connected & idle" unless a
+        // request is mid-flight (handleRequest owns the badge then).
+        if (inFlight === 0) setBadge("ok");
       } catch {
+        setBadge("off"); // relay daemon unreachable
         await new Promise((r) => setTimeout(r, 2000)); // relay not up yet / transient
       }
     }
@@ -175,4 +371,6 @@ chrome.alarms.onAlarm.addListener((a) => {
   if (a.name === "oe-relay-keepalive") void pollLoop();
 });
 
+// Start greyed-out; the first successful poll flips it green.
+setBadge("off");
 void pollLoop();

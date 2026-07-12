@@ -63,6 +63,28 @@ async function probeHealth(port: number, timeoutMs = HEALTH_TIMEOUT_MS): Promise
   }
 }
 
+/**
+ * Full `/health` payload for diagnostics (oe_health). Unlike `probeHealth`,
+ * returns every field the daemon reports (uptime, served, errored, …), or null
+ * when the daemon is unreachable.
+ */
+export async function fetchRelayHealth(
+  port: number,
+  timeoutMs = HEALTH_TIMEOUT_MS,
+): Promise<Record<string, unknown> | null> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/health`, { signal: ctrl.signal });
+    if (!res.ok) return null;
+    return (await res.json()) as Record<string, unknown>;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 function daemonEntrypoint(): string {
   // Sits next to this module in dist/. Production runs the compiled .js via node.
   return path.join(path.dirname(fileURLToPath(import.meta.url)), "relay-daemon.js");

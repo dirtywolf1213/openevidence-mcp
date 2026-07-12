@@ -505,6 +505,19 @@ async function safeReadSnippet(res: Response): Promise<string> {
   }
 }
 
+/**
+ * The suggested follow-up questions OpenEvidence renders under an answer, taken
+ * verbatim from `output.structured_article.follow_up_questions`. Pass any of
+ * these back as `oe_ask(question, original_article_id)` to continue the thread.
+ */
+export function extractFollowUpQuestions(article: Record<string, unknown>): string[] {
+  const output = article.output as Record<string, unknown> | undefined;
+  const structuredArticle = output?.structured_article as Record<string, unknown> | undefined;
+  const raw = structuredArticle?.follow_up_questions;
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((q): q is string => typeof q === "string" && q.trim().length > 0);
+}
+
 export function extractAnswerText(article: Record<string, unknown>): string | null {
   const output = article.output as Record<string, unknown> | undefined;
   const structuredArticle = output?.structured_article as Record<string, unknown> | undefined;

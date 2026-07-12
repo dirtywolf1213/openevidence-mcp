@@ -104,6 +104,21 @@ Use OpenEvidence to find guideline-supported anticoagulation options for cancer-
 
 A completed article returns the OpenEvidence payload and `status`, the `article_id`, the answer markdown as `extracted_answer_raw`, any figures, inline BibTeX as `artifacts.bibtex`, and saved citation files. Pass `include_bibtex: false` to keep the response small while still writing `citations.bib` to disk. Pass `strip_citation_markers: true` to also get `extracted_answer_clean` with the `[1]` / `[1-3]` reference marks removed — handy when quoting the answer into notes.
 
+### Follow-up questions — continue the same conversation
+
+Every completed answer carries **`follow_up_questions`** — the suggestions OpenEvidence renders under the answer (e.g. *"How does adjuvant therapy choice differ in elderly patients?"*). To ask any of them (or your own) **in the same conversation thread**, call `oe_ask` with `original_article_id` set to the answer's `article_id`:
+
+```jsonc
+// first answer → { article_id: "b752a1c1-…", follow_up_questions: ["How does adjuvant therapy choice differ in elderly patients?", …] }
+
+// oe_ask({ question: "How does adjuvant therapy choice differ in elderly patients?",
+//          original_article_id: "b752a1c1-…" })
+// → a new article that threads on the prior turn — the answer opens
+//   "Elderly patients with stage III colon cancer…", carrying the earlier context.
+```
+
+You only pass `original_article_id` + the new question — OpenEvidence rebuilds the conversation history server-side (the new article's `inputs.history` is populated for you). Each follow-up answer comes with its own fresh `follow_up_questions`, so you can keep drilling down. `original_article_id` accepts a bare UUID or a full `/ask/<id>` URL.
+
 ### Reading conversation pages by link
 
 Someone sends you an OpenEvidence link? **`oe_public_get(url)`** fetches the server-rendered `/ask/<id>` page and parses it into Q&A turns (question, answer as markdown, references). Auth escalates automatically:
@@ -114,14 +129,40 @@ Someone sends you an OpenEvidence link? **`oe_public_get(url)`** fetches the ser
 
 Page fetches count against the same account budget as API calls, so they run through the same rate limiter (60 clinical queries/min, self-throttled at 80%). `oe_public_get` also accepts a bare article UUID, and `oe_article_get` / `oe_ask.original_article_id` accept full `/ask/` URLs too.
 
+### Local answer store — search past answers offline, skip re-fetches
+
+Every completed answer from `oe_ask` / `oe_article_get` is upserted into a local SQLite table (`answers`) in the same file the collections tooling already uses (`~/.openevidence-mcp/db/oe.sqlite`). This gives you two things for free:
+
+- **Full-text search over what you've already asked** — **`oe_answers_search("query")`** runs an FTS5 query across questions, titles, and answer bodies and returns highlighted `»…«` snippets. It's fully offline: no OpenEvidence traffic, no rate-limit cost. Great for "did I already look this up?" before spending a query.
+
+  ```jsonc
+  // oe_answers_search({ query: "CAPEOX duration neurotoxicity" })
+  // → { total_stored, match_count, matches: [{ article_id, title, question, snippet, url, … }] }
+  ```
+
+  The query is FTS5 syntax — plain words are ANDed, `"quoted phrases"` match verbatim, and `AND`/`OR`/`NOT` work. Malformed queries fall back to a literal token search instead of erroring.
+
+- **Cache hits on `oe_article_get`** — fetching an article you've already stored returns instantly from disk with `from_cache: true` and **zero network round-trips** (it doesn't even touch the relay). Pass `refresh: true` to force a re-fetch from OpenEvidence and regenerate the on-disk citation artifacts.
+
+This store persists across reboots (unlike the citation artifacts under the OS temp dir), and only ever holds answers *this MCP fetched*. For your complete server-side history, use `oe_history_list` or the collections sync. Point it elsewhere with `OE_MCP_DB_PATH`; it needs Node ≥ 22 for the built-in `node:sqlite` (no extra dependency).
+
+### Is the pipeline up? `oe_health` vs `oe_auth_status`
+
+Two health checks, two speeds:
+
+- **`oe_health`** — a millisecond-fast, purely local check of the relay pipeline. It reads the daemon's `/health` and reports whether the daemon is up, whether the browser extension is actually polling (`extension_connected`), the version match, uptime, and served/errored counts — **without any OpenEvidence network call**. Use it to confirm the plumbing before an ask, or to diagnose a stuck relay. Each failure state carries a `hint`.
+- **`oe_auth_status`** — the full round-trip: hits `/api/auth/me` through the relay to confirm your **login session** is still valid. Slower, but it's the one that answers "am I actually logged in?".
+
 ## Tools
 
 | Tool                          | Purpose                                                                                                                     |
 | ----------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| `oe_ask`                      | Ask a question — fire-and-forget by default (returns a pending `article_id`); `wait_for_completion:true` to block            |
-| `oe_article_get`              | Fetch an article by id or `/ask/` URL (the fetch-later half of `oe_ask`); saves artifacts; `wait_for_completion` to block until ready |
+| `oe_ask`                      | Ask a question — fire-and-forget by default (returns a pending `article_id`); `wait_for_completion:true` to block; `original_article_id` to follow up in the same thread |
+| `oe_article_get`              | Fetch an article by id or `/ask/` URL (the fetch-later half of `oe_ask`); returns `follow_up_questions`; saves artifacts; `wait_for_completion` to block until ready |
 | `oe_public_get`               | Read a conversation page from an `/ask/<id>` link as Q&A markdown turns — public links need zero setup; private ones use the relay tab or `cookies.json` |
-| `oe_auth_status`              | Check `/api/auth/me` through the relay                                                                                       |
+| `oe_answers_search`           | Full-text search (SQLite FTS5) over every answer this MCP has fetched — offline, zero rate-limit cost; returns highlighted snippets |
+| `oe_health`                   | Millisecond-fast local check of the relay pipeline (daemon + extension) — no network call, unlike `oe_auth_status`          |
+| `oe_auth_status`              | Check `/api/auth/me` through the relay (full network round-trip)                                                             |
 | `oe_history_list`             | Read your OpenEvidence question history                                                                                      |
 | `oe_collections_list`         | List your collections                                                                                                       |
 | `oe_collections_get`          | Get a collection (incl. nested `questions[]` = membership list)                                                              |
@@ -224,6 +265,8 @@ Completed `oe_ask` / `oe_article_get` calls save artifacts under `${OE_MCP_ARTIF
 
 Crossref validation: DOI citations are validated directly; non-DOI citations use a bibliographic query and are marked `candidate` / `not_found` / `error`. Low-similarity matches never overwrite BibTeX metadata, and sources like NCCN guidelines may stay as local OpenEvidence metadata when Crossref has no authoritative match.
 
+These artifact files live under the OS temp dir and can be cleaned up by the system. The **answer body itself is also persisted** to the SQLite `answers` store (see [Local answer store](#local-answer-store--search-past-answers-offline-skip-re-fetches)), which survives reboots and powers `oe_answers_search` and the `oe_article_get` cache.
+
 ## Optional cookie path
 
 The extension relay is the default and recommended path. For headless reads without the extension, set `OE_MCP_RELAY_TRANSPORT=off` to route reads (`oe_history_list`, `oe_article_get`, `oe_collections_*`) over a browser-exported `cookies.json` — asks still need the extension. This path also backs the Python collections tooling and the `npm run doctor` / `login` / `smoke` CLIs.
@@ -281,7 +324,7 @@ Run `make help` for the grouped, always-current list.
 | `OE_MCP_POLL_TIMEOUT_MS`   | `180000`                                                                  | Default poll timeout                              |
 | `OE_MCP_COOKIES_PATH`      | `./cookies.json` if present, else `~/.openevidence-mcp/auth/cookies.json` | Cookie file (legacy/optional path)                |
 | `OE_MCP_FINGERPRINT_PATH`  | `./openevidence-fingerprint.json` if present                              | Browser signature fingerprint (legacy path)       |
-| `OE_MCP_DB_PATH`           | `~/.openevidence-mcp/db/oe.sqlite`                                        | Local SQLite mirror used by the collections tools |
+| `OE_MCP_DB_PATH`           | `~/.openevidence-mcp/db/oe.sqlite`                                        | Local SQLite file: collections mirror + the `answers` store (`oe_answers_search`, `oe_article_get` cache) |
 | `OE_MCP_PYTHON`            | `python3`                                                                 | Python interpreter the bridge tools spawn         |
 | `OE_MCP_LEGACY_ACCOUNT`    | `legacy`                                                                  | Label for pre-v2 rows on DB account migration     |
 

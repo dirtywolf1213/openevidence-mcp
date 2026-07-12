@@ -80,6 +80,24 @@
   footer { margin-top: 40px; padding-top: 20px; border-top: 1px solid var(--line); color: var(--muted); font-size: 13.5px; }
   ul.tidy { margin: 8px 0; padding-left: 20px; }
   ul.tidy li { margin: 4px 0; }
+
+  .feed { list-style: none; margin: 6px 0 0; padding: 0; max-height: 360px; overflow: auto; }
+  .feed li { display: flex; align-items: center; gap: 10px; padding: 9px 4px;
+             border-bottom: 1px solid var(--line); font-size: 14px; }
+  .feed li:last-child { border-bottom: 0; }
+  .feed .ic { width: 22px; text-align: center; font-size: 16px; flex: none; }
+  .feed .lbl { flex: 1 1 auto; font-weight: 600; }
+  .feed .meta { color: var(--muted); font-size: 12.5px; white-space: nowrap; }
+  .feed .st { flex: none; min-width: 46px; text-align: right; }
+  .feed li.live { background: #fff7f5; border-radius: 8px; }
+  .pill { border-radius: 999px; padding: 1px 9px; font-size: 12px; font-weight: 700; }
+  .pill.okp { background: #e8f7ee; color: #157a44; }
+  .pill.errp { background: #fdecea; color: #b3260f; }
+  .spin { color: var(--oe); font-weight: 700; animation: pulse 1s ease-in-out infinite; }
+  @keyframes pulse { 0%,100% { opacity: .25; } 50% { opacity: 1; } }
+  .feed-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  .btn.ghost { background: #ececed; color: var(--ink); padding: 6px 13px; font-size: 13px; }
+  .btn.ghost:hover { background: #e2e2e4; }
 </style>
 </head>
 <body>
@@ -113,6 +131,19 @@
     <div id="debug" style="display:none; margin-top:12px">
       <pre style="margin:0"><code id="debuglog"></code></pre>
     </div>
+  </div>
+
+  <div class="card">
+    <div class="feed-head">
+      <h2 style="margin:0">Activity</h2>
+      <button id="clearlog" class="btn ghost">Clear</button>
+    </div>
+    <p class="muted" style="margin:6px 0 4px">
+      Live feed of what your AI tools do through the relay — a question sent, an answer fetched back.
+    </p>
+    <ul id="activity" class="feed">
+      <li class="muted">No activity yet — ask OpenEvidence from your AI tool and watch it appear here.</li>
+    </ul>
   </div>
 
   <h2>What it does</h2>

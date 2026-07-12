@@ -1,30 +1,30 @@
 {
-  "manifest_version": 3,
-  "name": "OpenEvidence MCP Relay",
-  "version": "0.1.0",
-  "description": "Runs OpenEvidence requests inside your own logged-in tab so they carry your genuine browser session. Companion for the local openevidence-mcp server; localhost-only.",
-  "permissions": ["scripting", "tabs", "storage", "alarms"],
-  "host_permissions": [
-    "https://www.openevidence.com/*",
-    "http://127.0.0.1/*",
-    "http://localhost/*"
-  ],
-  "icons": {
-    "16": "icons/icon16.png",
-    "32": "icons/icon32.png",
-    "48": "icons/icon48.png",
-    "128": "icons/icon128.png"
-  },
-  "action": {
-    "default_title": "OpenEvidence MCP Relay — click for how it works",
-    "default_icon": {
-      "16": "icons/icon16.png",
-      "32": "icons/icon32.png",
-      "48": "icons/icon48.png",
-      "128": "icons/icon128.png"
-    }
-  },
-  "background": {
-    "service_worker": "background.js"
-  }
+	"manifest_version": 3,
+	"name": "OpenEvidence MCP Relay",
+	"version": "0.3.0",
+	"description": "Runs OpenEvidence requests inside your own logged-in tab so they carry your genuine browser session. Companion for the local openevidence-mcp server; localhost-only.",
+	"permissions": ["scripting", "tabs", "storage", "alarms"],
+	"host_permissions": [
+		"https://www.openevidence.com/*",
+		"http://127.0.0.1/*",
+		"http://localhost/*"
+	],
+	"icons": {
+		"16": "icons/icon16.png",
+		"32": "icons/icon32.png",
+		"48": "icons/icon48.png",
+		"128": "icons/icon128.png"
+	},
+	"action": {
+		"default_title": "OpenEvidence MCP Relay — click for how it works",
+		"default_icon": {
+			"16": "icons/icon16.png",
+			"32": "icons/icon32.png",
+			"48": "icons/icon48.png",
+			"128": "icons/icon128.png"
+		}
+	},
+	"background": {
+		"service_worker": "background.js"
+	}
 }
