@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-07-13
+
+### Changed
+- **`oe_ask` now submits a payload byte-identical to the official frontend.**
+  A live CDP capture (2026-07-13) of the site's `POST /api/article` showed
+  three drifts, all fixed in `buildAskBody`: the request now carries
+  `inputs.component_config_version: "stable"`, omits `disable_caching`
+  entirely unless explicitly set to `true` (the browser never sends it), and
+  orders `original_article` before `personalization_enabled` so the serialized
+  body matches the captured follow-up request byte-for-byte. The same capture
+  confirmed the follow-up mechanism end-to-end: the frontend passes only
+  `original_article` (no inline history) and the server assembles
+  `inputs.history` itself — exactly what `oe_ask`'s `original_article_id`
+  already does.
+
 ## [0.4.1] - 2026-07-12
 
 ### Added
