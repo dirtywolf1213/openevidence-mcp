@@ -50,6 +50,14 @@ CREATE TRIGGER IF NOT EXISTS answers_fts_au AFTER UPDATE ON answers BEGIN
   INSERT INTO answers_fts(rowid, question, title, answer_markdown)
   VALUES (new.rowid, new.question, new.title, new.answer_markdown);
 END;
+
+-- One row per submitted ask (POST /api/article), shared across all MCP sessions
+-- so they cooperatively pace against OpenEvidence's per-account question limit.
+CREATE TABLE IF NOT EXISTS ask_log (
+  account   TEXT NOT NULL,
+  asked_at  INTEGER NOT NULL  -- ms epoch
+);
+CREATE INDEX IF NOT EXISTS ask_log_at ON ask_log(account, asked_at);
 `;
 
 export interface AnswerRecord {
@@ -182,6 +190,40 @@ export class AnswersDb {
   count(): number {
     const row = this.db.prepare("SELECT COUNT(*) AS n FROM answers").get() as { n: number };
     return row.n;
+  }
+
+  // ---- ask pacing (per-account question-rate cooperation) ---------------------
+
+  /** Epoch-ms of the most recent recorded ask for this account, or 0 if none. */
+  lastAskAt(account: string): number {
+    const row = this.db
+      .prepare("SELECT MAX(asked_at) AS m FROM ask_log WHERE account = ?")
+      .get(account) as { m: number | null } | undefined;
+    return row?.m ?? 0;
+  }
+
+  /** How many asks this account submitted in the trailing `windowMs`. */
+  asksSince(account: string, sinceMs: number): number {
+    const row = this.db
+      .prepare("SELECT COUNT(*) AS n FROM ask_log WHERE account = ? AND asked_at >= ?")
+      .get(account, sinceMs) as { n: number };
+    return row.n;
+  }
+
+  /** How many asks on this machine (any account) since `sinceMs`. */
+  asksSinceAny(sinceMs: number): number {
+    const row = this.db
+      .prepare("SELECT COUNT(*) AS n FROM ask_log WHERE asked_at >= ?")
+      .get(sinceMs) as { n: number };
+    return row.n;
+  }
+
+  /** Record an ask at `atMs` and opportunistically prune rows older than a day. */
+  recordAsk(account: string, atMs: number): void {
+    this.db.prepare("INSERT INTO ask_log (account, asked_at) VALUES (?, ?)").run(account, atMs);
+    this.db
+      .prepare("DELETE FROM ask_log WHERE asked_at < ?")
+      .run(atMs - 24 * 60 * 60 * 1000);
   }
 
   close(): void {

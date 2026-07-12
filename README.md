@@ -112,6 +112,25 @@ Use OpenEvidence to find guideline-supported anticoagulation options for cancer-
 
 A completed article returns the OpenEvidence payload and `status`, the `article_id`, the answer markdown as `extracted_answer_raw`, any figures, inline BibTeX as `artifacts.bibtex`, and saved citation files. Pass `include_bibtex: false` to keep the response small while still writing `citations.bib` to disk. Pass `strip_citation_markers: true` to also get `extracted_answer_clean` with the `[1]` / `[1-3]` reference marks removed — handy when quoting the answer into notes.
 
+### Question pacing — stay under your hourly ask limit
+
+OpenEvidence caps how many **questions** you can ask per account over time. Only
+`oe_ask` spends that budget — a new question *and* every follow-up is one ask.
+Everything else (`oe_article_get`, `oe_answers_search`, `oe_history_list`,
+`oe_public_get`, `oe_auth_status`, `oe_health`, collections) is free of it.
+
+To avoid bursts that trip the limit, `oe_ask` **paces submissions**: it waits
+(never errors) so consecutive asks are at least `OE_MCP_ASK_MIN_INTERVAL_MS`
+apart (default 1000 ms ≈ 1 question/second). The wait is coordinated across all
+MCP sessions through the shared SQLite `ask_log`, so several Claude/Codex windows
+can't collectively exceed the rate. Every `oe_ask` reply carries
+`ask_pacing: { waited_ms, asks_last_hour }`, and `oe_health` reports
+`asks_last_hour` so you can see how many questions you've spent in the trailing
+hour at a glance. Set `OE_MCP_ASK_MIN_INTERVAL_MS=0` to disable pacing.
+
+The biggest saver, though, is **not re-asking**: `oe_answers_search` finds a past
+answer and `oe_article_get` serves it from cache — both cost zero questions.
+
 ### Follow-up questions — continue the same conversation
 
 Every completed answer carries **`follow_up_questions`** — the suggestions OpenEvidence renders under the answer (e.g. *"How does adjuvant therapy choice differ in elderly patients?"*). To ask any of them (or your own) **in the same conversation thread**, call `oe_ask` with `original_article_id` set to the answer's `article_id`:
@@ -332,6 +351,7 @@ Run `make help` for the grouped, always-current list.
 | `OE_MCP_ARTIFACT_DIR`      | OS temp dir + `openevidence-mcp`                                          | Artifact output directory                         |
 | `OE_MCP_CROSSREF_MAILTO`   | unset                                                                     | Optional Crossref polite-pool email               |
 | `OE_MCP_CROSSREF_VALIDATE` | `1`                                                                       | Set `0` to skip Crossref validation               |
+| `OE_MCP_ASK_MIN_INTERVAL_MS` | `1000`                                                                  | Minimum spacing between questions (`oe_ask`); waits, never errors; `0` disables |
 | `OE_MCP_POLL_INTERVAL_MS`  | `1200`                                                                    | Poll interval when waiting for an answer          |
 | `OE_MCP_POLL_TIMEOUT_MS`   | `180000`                                                                  | Default poll timeout                              |
 | `OE_MCP_COOKIES_PATH`      | `./cookies.json` if present, else `~/.openevidence-mcp/auth/cookies.json` | Cookie file (legacy/optional path)                |

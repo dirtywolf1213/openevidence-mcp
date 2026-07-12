@@ -42,6 +42,13 @@ export interface AppConfig {
    * chats/collections mirror.
    */
   dbPath: string;
+  /**
+   * Minimum spacing between question submissions (oe_ask → POST /api/article),
+   * enforced by waiting, not erroring, and coordinated across sessions via the
+   * shared SQLite ask_log. Respects OpenEvidence's per-account question rate
+   * (default ~1 question/second). Set OE_MCP_ASK_MIN_INTERVAL_MS=0 to disable.
+   */
+  askMinIntervalMs: number;
   rateLimit: RateLimitConfig;
 }
 
@@ -87,6 +94,12 @@ export function resolveConfig(): AppConfig {
       process.env.OE_MCP_RELAY_LOG_PATH ?? path.join(rootDir, `relay-${relayPort}.log`),
     relayTransport: process.env.OE_MCP_RELAY_TRANSPORT === "off" ? "off" : "all",
     dbPath: process.env.OE_MCP_DB_PATH ?? path.join(rootDir, "db", "oe.sqlite"),
+    askMinIntervalMs: (() => {
+      const raw = process.env.OE_MCP_ASK_MIN_INTERVAL_MS;
+      if (raw === undefined) return 1000;
+      const n = parseInt(raw, 10);
+      return Number.isFinite(n) && n >= 0 ? n : 1000;
+    })(),
     rateLimit: resolveRateLimitConfig(),
   };
 }

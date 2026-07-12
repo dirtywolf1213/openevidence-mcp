@@ -7,6 +7,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- **Question pacing to respect the per-account hourly ask limit.** Only `oe_ask`
+  (a new question or a follow-up) spends OpenEvidence's question budget; every
+  other tool is free of it. `oe_ask` now paces submissions — it *waits* (never
+  errors) so consecutive asks are at least `OE_MCP_ASK_MIN_INTERVAL_MS` apart
+  (default 1000 ms ≈ 1 question/second), coordinated across all MCP sessions via
+  a shared `ask_log` table in the SQLite store so multiple windows can't
+  collectively exceed the rate. Each `oe_ask` reply carries
+  `ask_pacing: { waited_ms, asks_last_hour }`, and `oe_health` surfaces
+  `asks_last_hour` + `ask_min_interval_ms` for at-a-glance quota visibility. Set
+  `OE_MCP_ASK_MIN_INTERVAL_MS=0` to disable. (The cheapest saver remains not
+  re-asking: `oe_answers_search` + the `oe_article_get` cache cost zero
+  questions.)
 - **Lifecycle Make targets + an install skill.** New `make update` (git pull +
   rebuild + re-register), `make uninstall` (unregister from the CLIs, stop
   daemons, remove builds — keeps `~/.openevidence-mcp` and the browser

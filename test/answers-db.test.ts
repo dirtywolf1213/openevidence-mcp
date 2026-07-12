@@ -119,3 +119,27 @@ test("getByArticleId returns null for unknown ids", () => {
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("ask log: lastAskAt, asksSince, and per-account isolation", () => {
+  const { db, dir } = tempDb();
+  try {
+    const now = 1_000_000_000_000;
+    assert.equal(db.lastAskAt("a@x.com"), 0, "no asks yet → 0");
+
+    db.recordAsk("a@x.com", now - 7_200_000); // 2h ago
+    db.recordAsk("a@x.com", now - 1_800_000); // 30m ago
+    db.recordAsk("a@x.com", now - 500); // just now
+    db.recordAsk("b@y.com", now - 100); // other account
+
+    assert.equal(db.lastAskAt("a@x.com"), now - 500, "latest ask wins");
+    // Trailing hour for account a: the 30m + the just-now = 2 (the 2h-ago is out).
+    assert.equal(db.asksSince("a@x.com", now - 3_600_000), 2);
+    // Account isolation: b's ask does not count for a.
+    assert.equal(db.asksSince("b@y.com", now - 3_600_000), 1);
+    // Any-account count in the trailing hour = a's 2 + b's 1.
+    assert.equal(db.asksSinceAny(now - 3_600_000), 3);
+  } finally {
+    db.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

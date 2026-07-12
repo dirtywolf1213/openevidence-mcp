@@ -102,6 +102,39 @@ function getAnswersDb(): AnswersDb | null {
 // same account key the Python CLI writes, so the tables join cleanly.
 let lastKnownAccount: string | null = null;
 
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Space question submissions to respect OpenEvidence's per-account question rate
+ * (~1/sec). Waits — never errors — for the remainder of askMinIntervalMs since
+ * the last recorded ask, coordinated across sessions via the shared ask_log.
+ * Records this ask and returns how long it waited plus the trailing-hour count.
+ */
+async function paceAsk(): Promise<{ waitedMs: number; asksLastHour: number }> {
+	const db = getAnswersDb();
+	const account = lastKnownAccount ?? "unknown";
+	if (!db || config.askMinIntervalMs <= 0) {
+		return { waitedMs: 0, asksLastHour: db ? db.asksSince(account, Date.now() - 3_600_000) : 0 };
+	}
+	let waitedMs = 0;
+	try {
+		const gap = Date.now() - db.lastAskAt(account);
+		waitedMs = Math.max(0, config.askMinIntervalMs - gap);
+		if (waitedMs > 0) await sleep(waitedMs);
+		db.recordAsk(account, Date.now());
+	} catch (err) {
+		process.stderr.write(`[ask-pacing] ${String(err)}\n`);
+	}
+	const asksLastHour = (() => {
+		try {
+			return db.asksSince(account, Date.now() - 3_600_000);
+		} catch {
+			return 0;
+		}
+	})();
+	return { waitedMs, asksLastHour };
+}
+
 /** Best-effort upsert of a fetched answer; storage must never fail the tool. */
 function persistAnswer(
 	article: Record<string, unknown>,
@@ -174,6 +207,14 @@ server.registerTool(
 			requests_errored: h.errored,
 			requests_pending: h.pending,
 			last_activity: lastActivityAt ? new Date(lastActivityAt).toISOString() : null,
+			asks_last_hour: (() => {
+				try {
+					return getAnswersDb()?.asksSinceAny(Date.now() - 3_600_000) ?? null;
+				} catch {
+					return null;
+				}
+			})(),
+			ask_min_interval_ms: config.askMinIntervalMs,
 			...(h.connected !== true && {
 				hint: "Daemon is up but the browser extension is not polling — check the extension is loaded and the browser is running.",
 			}),
@@ -417,18 +458,27 @@ server.registerTool(
 				variantConfigurationFile: args.variant_configuration_file,
 			};
 			
+			// Respect the per-account question rate before firing the POST.
+			const pacing = await paceAsk();
+
 			const created = await client.ask(askPayload);
 			const articleId = String((created as { id?: string }).id ?? "");
 			if (!articleId) {
 				return fail("ask POST returned no article id.");
 			}
-			
+
+			const askPacing = {
+				waited_ms: pacing.waitedMs,
+				asks_last_hour: pacing.asksLastHour,
+			};
+
 			const waitForCompletion = args.wait_for_completion ?? false;
 			if (!waitForCompletion) {
 				return ok({
 					article_id: articleId,
 					status: "pending",
 					note: "Fire-and-forget: article submitted. Fetch the answer with oe_article_get(article_id) — pass wait_for_completion:true there to block until it is ready.",
+					ask_pacing: askPacing,
 					created,
 				});
 			}
@@ -456,6 +506,7 @@ server.registerTool(
 				follow_up_questions: extractFollowUpQuestions(article),
 				follow_up_hint:
 					"To continue this thread, call oe_ask with one of follow_up_questions (or your own) and original_article_id set to this article_id.",
+				ask_pacing: askPacing,
 				artifacts: formatArtifactsForResponse(artifacts, args.include_bibtex ?? true),
 			});
 		}),
