@@ -20,7 +20,7 @@ SERVER := $(CURDIR)/dist/server.js
 VERSION := $(shell $(NODE) -p "require('$(CURDIR)/package.json').version")
 EXT_VERSION := $(shell $(NODE) -p "require('$(CURDIR)/extension/package.json').version")
 
-.PHONY: all help deps build extension rebuild reinstall check test smoke fingerprint import-cookies update-dotflows update-dotflows-from-har sync-mine sync-mine-from-har install-claude-global install-codex-global install-agy-global install-all remove-claude-global remove-codex-global remove-agy-global reinstall-claude-global reinstall-codex-global reinstall-agy-global release publish release-extension kill-all reap clean
+.PHONY: all help deps build extension rebuild reinstall check test smoke fingerprint import-cookies update-dotflows update-dotflows-from-har sync-mine sync-mine-from-har install-claude-global install-codex-global install-agy-global install-all remove-claude-global remove-codex-global remove-agy-global reinstall-claude-global reinstall-codex-global reinstall-agy-global release publish release-extension kill-all reap clean remove-all update cleanup uninstall status
 
 # One command does the whole setup: install deps, build the MCP server
 # (dist/server.js) + the relay extension (extension/dist), and register the
@@ -201,3 +201,55 @@ reap:
 
 clean:
 	rm -rf "$(CURDIR)/dist" "$(CURDIR)/extension/dist"
+
+# ---- lifecycle convenience targets (wrapped by the install skill) -------------
+
+# Unregister from every AI CLI that has it, skipping CLIs that aren't installed.
+remove-all:
+	@command -v $(CLAUDE) >/dev/null 2>&1 && { $(CLAUDE) mcp remove --scope user $(MCP_NAME) >/dev/null 2>&1 && echo "[ok] removed from Claude" || echo "[--] not registered in Claude"; } || true
+	@command -v $(CODEX) >/dev/null 2>&1 && { $(CODEX) mcp remove $(MCP_NAME) >/dev/null 2>&1 && echo "[ok] removed from Codex" || echo "[--] not registered in Codex"; } || true
+	@command -v $(AGY) >/dev/null 2>&1 && { $(AGY) mcp remove --scope user $(MCP_NAME) >/dev/null 2>&1 && echo "[ok] removed from agy" || true; } || true
+
+# Pull the latest release, rebuild the server + extension, re-register. The one
+# manual step left is reloading the browser extension (a chrome:// GUI action).
+update:
+	@echo "==> updating openevidence-mcp"
+	git fetch --tags --quiet || true
+	git pull --ff-only
+	$(MAKE) kill-all
+	$(MAKE) deps build extension install-claude-global install-codex-global
+	@printf '\n\033[32m✅  Updated — server v%s · extension v%s\033[0m\n' \
+		"$$($(NODE) -p "require('$(CURDIR)/package.json').version")" \
+		"$$($(NODE) -p "require('$(CURDIR)/extension/package.json').version")"
+	@printf '\033[1m👉  Reload the browser extension\033[0m to pick up the new relay build:\n'
+	@printf '      chrome://extensions  →  Reload  on "OpenEvidence MCP Relay"\n'
+	@printf '   then reconnect /mcp in your AI client.\n\n'
+
+# Reap orphan daemons, free stale state — WITHOUT unregistering or touching data.
+cleanup:
+	@echo "==> cleaning transient relay state (install + your data are kept)"
+	-$(MAKE) reap
+	@find "$(HOME)/.openevidence-mcp" -name 'relay-*.log' -size +5M -delete 2>/dev/null && echo "  pruned large relay logs" || true
+	@rm -rf "$${TMPDIR:-/tmp}/openevidence-mcp" 2>/dev/null && echo "  cleared temp answer artifacts" || true
+	@echo "[ok] done."
+
+# Remove the MCP everywhere: stop daemons, unregister from CLIs, delete builds.
+# Deliberately leaves ~/.openevidence-mcp (your db + config) and the browser
+# extension in place — a full wipe is a manual, explicit step (printed below).
+uninstall: remove-all
+	@echo "==> uninstalling openevidence-mcp"
+	-$(MAKE) kill-all
+	$(MAKE) clean
+	@printf '[ok] unregistered from AI CLIs, stopped daemons, removed dist/.\n'
+	@printf 'Kept (remove by hand for a full wipe):\n'
+	@printf '  * data + answers db:  rm -rf ~/.openevidence-mcp\n'
+	@printf '  * browser extension:  chrome://extensions -> Remove "OpenEvidence MCP Relay"\n'
+
+# One-glance health: versions, live relay, registration.
+status:
+	@printf '==> openevidence-mcp status\n'
+	@printf 'repo:      %s\n' "$(CURDIR)"
+	@printf 'version:   server v%s  ·  extension v%s\n' "$(VERSION)" "$(EXT_VERSION)"
+	@printf 'relay:     '; curl -s --max-time 2 http://127.0.0.1:$(RELAY_PORT)/health || printf '(not reachable on :%s)' "$(RELAY_PORT)"; printf '\n'
+	@command -v $(CLAUDE) >/dev/null 2>&1 && { printf 'claude:    '; $(CLAUDE) mcp list 2>/dev/null | grep -qi $(MCP_NAME) && printf 'registered\n' || printf 'not registered\n'; } || true
+	@command -v $(CODEX) >/dev/null 2>&1 && { printf 'codex:     '; $(CODEX) mcp list 2>/dev/null | grep -qi $(MCP_NAME) && printf 'registered\n' || printf 'not registered\n'; } || true

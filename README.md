@@ -64,6 +64,14 @@ curl -s http://127.0.0.1:8787/health     # expect {"ok":true,"connected":true,"v
 
 Then just ask, in any MCP client: *“Use OpenEvidence to answer …”*. Re-run `make all` anytime to rebuild + re-register; `make help` lists every target; `make kill-all` stops all servers + the relay daemon.
 
+**Already installed? Update in one line:**
+
+```bash
+make update    # git pull latest release · rebuild server + extension · re-register
+```
+
+Then **reload the browser extension** (`chrome://extensions` → Reload) and reconnect `/mcp`. `make status` shows versions + live health; `make uninstall` removes it. (Inside an AI session you can also just say *“update openevidence-mcp”* — the bundled **install skill** runs the right step and reminds you to reload the extension.)
+
 > Clicking the extension's toolbar icon opens a built-in **how-it-works page** with a live connection check.
 
 > `cookies.json` and a HAR are **optional** — needed only for the legacy `OE_MCP_RELAY_TRANSPORT=off` cookie read path, the Python collections tooling, and `npm run doctor` / `login` / `smoke`. See [Optional cookie path](#optional-cookie-path).
@@ -298,6 +306,10 @@ Run `make help` for the grouped, always-current list.
 | Target                                              | Purpose                                                                                                                     |
 | --------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
 | `make all` (or bare `make`)                         | **One-shot setup:** deps + build server + build extension + register into Claude & Codex (skips a CLI that isn't installed)  |
+| `make update`                                       | **Update to the latest release:** `git pull` + rebuild + re-register (then reload the extension)                            |
+| `make status`                                       | Versions, live relay `/health`, and CLI registration at a glance                                                            |
+| `make cleanup`                                      | Reap orphan relay daemons + prune stale logs/temp — non-destructive (relay respawns on next use)                            |
+| `make uninstall`                                    | Unregister from the CLIs, stop daemons, remove `dist/` (keeps `~/.openevidence-mcp` + the browser extension)                |
 | `make help`                                         | Grouped reference of every target                                                                                           |
 | `make kill-all`                                     | Stop all MCP servers + the relay daemon and free port 8787                                                                  |
 | `make relay`                                        | Run the standalone relay daemon in the foreground (debug)                                                                   |

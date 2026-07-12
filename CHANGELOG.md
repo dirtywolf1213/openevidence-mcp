@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- **Lifecycle Make targets + an install skill.** New `make update` (git pull +
+  rebuild + re-register), `make uninstall` (unregister from the CLIs, stop
+  daemons, remove builds — keeps `~/.openevidence-mcp` and the browser
+  extension), `make status` (versions + live relay health + registration), and
+  `make cleanup` (reap orphan daemons, prune stale logs/temp — non-destructive,
+  relay respawns on next use). A bundled Claude Code skill
+  (`.claude/skills/install/`) wraps these behind a portable `oe-mcp.sh`
+  dispatcher (`install` / `update` / `cleanup` / `uninstall` / `status`) so
+  "update openevidence-mcp" in an AI session does the right thing and reminds you
+  to reload the extension.
+
 ## [0.4.0] - 2026-07-12
 
 ### Added
