@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-07-12
+
 ### Added
 - **Question pacing to respect the per-account hourly ask limit.** Only `oe_ask`
   (a new question or a follow-up) spends OpenEvidence's question budget; every
