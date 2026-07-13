@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-07-13
+
+### Added
+- **`oe_article_set_access` — toggle a conversation's share visibility.**
+  `public:true` makes a conversation link-shareable (`ANYONE_WITH_LINK` —
+  anyone with the `/ask/<id>` URL can read it, no login); `public:false`
+  reverts it to private (`CREATOR_ONLY`). Wraps `PATCH /api/article/<id>/access`
+  through the relay (only the owning browser session may change access) with a
+  body captured byte-for-byte from the site's Share dialog (2026-07-13); returns
+  the shareable URL. The tool description warns against publishing PHI or
+  medically sensitive patient information.
+- **`OpenEvidenceClient.setArticleAccess` + a `PATCH` JSON helper** underpin the
+  new tool.
+
 ## [0.4.2] - 2026-07-13
 
 ### Changed
