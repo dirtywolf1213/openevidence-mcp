@@ -19,7 +19,12 @@ import {
   type RateLimitConfig,
   type RateLimitMetrics,
 } from "./rate-limit.js";
-import type { AuthStatusResult, OpenEvidenceAskRequest, WaitOptions } from "./types.js";
+import type {
+  ArticleAccessLevel,
+  AuthStatusResult,
+  OpenEvidenceAskRequest,
+  WaitOptions,
+} from "./types.js";
 
 const DEFAULT_ARTICLE_TYPE = "Ask OpenEvidence Light with citations";
 const PENDING_STATUSES = new Set(["queued", "pending", "processing", "running", "in_progress"]);
@@ -138,6 +143,23 @@ export class OpenEvidenceClient {
   }
 
   /**
+   * Toggle an article's share visibility (PATCH /api/article/<id>/access).
+   * `ANYONE_WITH_LINK` makes it public (anyone with the URL can read it);
+   * `CREATOR_ONLY` makes it private again. The payload mirrors the live site's
+   * Share dialog capture (2026-07-13). Requires the browser relay, since only
+   * the owning session may change access.
+   */
+  async setArticleAccess(
+    articleId: string,
+    accessLevel: ArticleAccessLevel,
+  ): Promise<Record<string, unknown>> {
+    return (await this.patchJson(`/api/article/${articleId}/access`, {
+      access_level: accessLevel,
+      shared_with_emails: [],
+    })) as Record<string, unknown>;
+  }
+
+  /**
    * Submit the ask (POST /api/article). With a connected relay (the default
    * OE_MCP_RELAY_TRANSPORT=all) this runs inside your logged-in browser tab, so it
    * clears DataDome and the created article is owned by that same session — the
@@ -217,6 +239,24 @@ export class OpenEvidenceClient {
       priority,
     );
     await assertSuccessResponse(res, "POST", url);
+    return res.json();
+  }
+
+  private async patchJson(
+    url: string,
+    body: unknown,
+    priority?: ClinicalPriority,
+  ): Promise<unknown> {
+    const res = await this.requestWithRateLimit(
+      url,
+      {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      },
+      priority,
+    );
+    await assertSuccessResponse(res, "PATCH", url);
     return res.json();
   }
 

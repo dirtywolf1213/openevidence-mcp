@@ -34,7 +34,7 @@ import {
 	runCollectionSort,
 	withTempPlan,
 } from "./python-bridge.js";
-import type { OpenEvidenceAskRequest } from "./types.js";
+import type { ArticleAccessLevel, OpenEvidenceAskRequest } from "./types.js";
 
 const config = resolveConfig();
 ensureConfigDirs(config);
@@ -581,6 +581,54 @@ server.registerTool(
 			return fail(error instanceof Error ? error.message : String(error));
 		}
 	},
+);
+
+server.registerTool(
+	"oe_article_set_access",
+	{
+		title: "OpenEvidence Article Share Access",
+		description:
+			"Set a conversation's share visibility (PATCH /api/article/<id>/access). " +
+			"public:true makes it link-shareable (ANYONE_WITH_LINK — anyone with the URL can read it, no login); " +
+			"public:false makes it private again (CREATOR_ONLY). Returns the shareable /ask/<id> URL. " +
+			"You must own the conversation, and the relay extension must be connected (only the owning browser session may change access). " +
+			"⚠️ Publishing exposes the conversation to anyone on the internet with the link — do not publish anything containing PHI or medically sensitive patient information.",
+		inputSchema: z.object({
+			article_id: z
+				.string()
+				.min(8)
+				.describe("Article UUID or openevidence.com/ask/<id> URL of the conversation."),
+			public: z
+				.boolean()
+				.describe("true → ANYONE_WITH_LINK (public); false → CREATOR_ONLY (private)."),
+		}),
+	},
+	async (args) =>
+		withClient(async (client) => {
+			const articleId = extractArticleId(args.article_id);
+			if (!articleId) {
+				return fail(
+					`Could not find an article UUID in "${args.article_id}". Pass an openevidence.com/ask/<id> URL or a bare UUID.`,
+				);
+			}
+			const accessLevel: ArticleAccessLevel = args.public
+				? "ANYONE_WITH_LINK"
+				: "CREATOR_ONLY";
+			const data = await client.setArticleAccess(articleId, accessLevel);
+			const resolved = String(
+				(data as { resolved_access_level?: string; access_level?: string })
+					.resolved_access_level ??
+					(data as { access_level?: string }).access_level ??
+					accessLevel,
+			);
+			return ok({
+				article_id: articleId,
+				public: resolved === "ANYONE_WITH_LINK",
+				access_level: resolved,
+				share_url: `https://www.openevidence.com/ask/${articleId}`,
+				result: data,
+			});
+		}),
 );
 
 server.registerTool(

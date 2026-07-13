@@ -187,6 +187,7 @@ Two health checks, two speeds:
 | `oe_ask`                      | Ask a question — fire-and-forget by default (returns a pending `article_id`); `wait_for_completion:true` to block; `original_article_id` to follow up in the same thread |
 | `oe_article_get`              | Fetch an article by id or `/ask/` URL (the fetch-later half of `oe_ask`); returns `follow_up_questions`; saves artifacts; `wait_for_completion` to block until ready |
 | `oe_public_get`               | Read a conversation page from an `/ask/<id>` link as Q&A markdown turns — public links need zero setup; private ones use the relay tab or `cookies.json` |
+| `oe_article_set_access`       | Toggle a conversation's share visibility — `public:true` → link-shareable (`ANYONE_WITH_LINK`), `public:false` → private (`CREATOR_ONLY`); returns the `/ask/<id>` URL (you must own it; relay required) |
 | `oe_answers_search`           | Full-text search (SQLite FTS5) over every answer this MCP has fetched — offline, zero rate-limit cost; returns highlighted snippets |
 | `oe_health`                   | Millisecond-fast local check of the relay pipeline (daemon + extension) — no network call, unlike `oe_auth_status`          |
 | `oe_auth_status`              | Check `/api/auth/me` through the relay (full network round-trip)                                                             |

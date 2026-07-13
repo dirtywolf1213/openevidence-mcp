@@ -10,6 +10,9 @@ export interface OpenEvidenceAskRequest {
   priority?: ClinicalPriority;
 }
 
+/** Share visibility for an article (PATCH /api/article/<id>/access). */
+export type ArticleAccessLevel = "CREATOR_ONLY" | "ANYONE_WITH_LINK";
+
 export interface WaitOptions {
   timeoutMs?: number;
   intervalMs?: number;
